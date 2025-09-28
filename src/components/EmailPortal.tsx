@@ -1,21 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Mail, Send } from "lucide-react";
-import { 
-  useRegisterState, 
-  useRegisterFrontendTool,
-  useSubscribeStateToAgentContext 
-} from 'cedar-os';
-import { z } from 'zod';
-
-// Magic Wand Icon for the spell
-const MagicWandIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.998 15.998 0 011.622-3.385m5.043.025a15.998 15.998 0 001.622-3.385m3.388 1.62a15.998 15.998 0 00-1.622 3.385m-5.043-.025a15.998 15.998 0 01-3.388-1.621m5.043.025a15.998 15.998 0 013.388 1.622m0-11.218a4.5 4.5 0 11-8.4 2.245 4.5 4.5 0 018.4-2.245z" />
-  </svg>
-);
+import { Mail, Send, Wand2 } from "lucide-react";
 import { useSpell, ActivationMode, Hotkey } from 'cedar-os';
+import { useRegisterState, useRegisterFrontendTool, useSubscribeStateToAgentContext } from 'cedar-os';
+import { z } from 'zod';
 
 
 
@@ -24,7 +13,7 @@ interface Patient {
   name: string;
   mrn: string;
   email: string;
-  body : string;
+  body: string;
 }
 
 interface AgentStatus {
@@ -346,9 +335,10 @@ Michael Brown`
   return (
     <>
       {selectedEmail && (
-        <LabSpell 
+        <CommandPaletteSpell 
           selectedPatientId={selectedEmail.id}
           onFetchSummary={fetchPatientSummaryWithMastra}
+          isPatientSummaryOpen={!!patientSummary}
         />
       )}
       <div className="flex h-screen bg-gray-100">
@@ -457,7 +447,7 @@ Michael Brown`
                   className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Use CARE to generate contextual healthcare email reply"
                 >
-                  <MagicWandIcon />
+                  <Wand2 size={16} />
                   {draftReply ? '✨ Continue with CARE' : '✨ Generate with CARE'}
                 </button>
               </div>
@@ -494,24 +484,29 @@ Michael Brown`
   );
 };
 
-interface LabSpellProps {
-  selectedPatientId: string;
+interface CommandPaletteSpellProps {
+  selectedPatientId?: string;
   onFetchSummary: (patientId: string) => void;
+  isPatientSummaryOpen: boolean;
 }
 
-function LabSpell({ selectedPatientId, onFetchSummary }: LabSpellProps) {
+function CommandPaletteSpell({ selectedPatientId, onFetchSummary, isPatientSummaryOpen }: CommandPaletteSpellProps) {
   const [loading, setLoading] = useState(false);
   const [patientSummary, setPatientSummary] = useState<PatientSummary | null>(null);
+  const [mode, setMode] = useState<'summary' | 'generate'>('summary');
   const [query, setQuery] = useState('');
 
-  const { isActive, deactivate } = useSpell({
-    id: 'lab-spell',
+    const { isActive, deactivate } = useSpell({
+    id: 'command-palette',
     activationConditions: {
       events: ['cmd+k'],
       mode: ActivationMode.TOGGLE,
     },
     onActivate: async () => {
-      if (selectedPatientId) {
+      if (isPatientSummaryOpen) {
+        setMode('generate');
+      } else if (selectedPatientId) {
+        setMode('summary');
         setLoading(true);
         try {
           const response = await fetch(`http://localhost:4001/api/patient/${selectedPatientId}/summary`);
@@ -519,7 +514,7 @@ function LabSpell({ selectedPatientId, onFetchSummary }: LabSpellProps) {
           if (result.success) {
             setPatientSummary(result);
           } else {
-            alert(`Mastra Agent Error: ${result.error}`);
+            alert(`Error: ${result.error}`);
           }
         } catch (error: any) {
           alert(`Network error: ${error.message}`);
@@ -527,7 +522,7 @@ function LabSpell({ selectedPatientId, onFetchSummary }: LabSpellProps) {
           setLoading(false);
         }
       } else {
-        alert('Please select a patient first!');
+        setMode('generate');
       }
     },
     preventDefaultEvents: true,
@@ -541,18 +536,31 @@ function LabSpell({ selectedPatientId, onFetchSummary }: LabSpellProps) {
 				<div className='sticky top-0 bg-white border-b z-10'>
 					<div className='flex justify-between items-center px-6 py-4'>
 						<div className='flex items-center gap-2'>
-							<h2 className='text-lg font-semibold'>📊 Patient Summary</h2>
+							<h2 className='text-lg font-semibold'>
+								{mode === 'summary' ? '📊 Patient Summary' : '✨ Generate with Care'}
+							</h2>
 						</div>
-						<button 
-							onClick={deactivate}
-							className='p-2 hover:bg-gray-100 rounded-full'
-						>
-							<span className='text-gray-500'>×</span>
-						</button>
+						<div className='flex items-center gap-2'>
+							{isPatientSummaryOpen && (
+								<button
+									onClick={() => setMode(mode === 'summary' ? 'generate' : 'summary')}
+									className='p-2 hover:bg-gray-100 rounded-full text-gray-500'
+									title={mode === 'summary' ? 'Switch to Generate' : 'View Patient Summary'}
+								>
+									{mode === 'summary' ? <Wand2 size={16} /> : '📊'}
+								</button>
+							)}
+							<button 
+								onClick={deactivate}
+								className='p-2 hover:bg-gray-100 rounded-full'
+							>
+								<span className='text-gray-500'>×</span>
+							</button>
+						</div>
 					</div>
 					<div className='px-6 pb-4 text-sm text-gray-500 flex items-center gap-2'>
 						<span className='w-2 h-2 rounded-full bg-green-500 animate-pulse'></span>
-						Auto-generated Report
+						{mode === 'summary' ? 'Auto-generated Report' : 'AI-powered Assistant'}
 					</div>
 				</div>
 
