@@ -13,13 +13,14 @@ import { CedarCaptionChat } from '@/cedar/components/chatComponents/CedarCaption
 import { FloatingCedarChat } from '@/cedar/components/chatComponents/FloatingCedarChat';
 import { SidePanelCedarChat } from '@/cedar/components/chatComponents/SidePanelCedarChat';
 import { DebuggerPanel } from '@/cedar/components/debugger';
+import EmailPortal from '@/components/EmailPortal';
 
-type ChatMode = 'floating' | 'sidepanel' | 'caption';
+type ChatMode = 'floating' | 'sidepanel' | 'caption' | 'healthcare';
 
 export default function HomePage() {
   // Cedar-OS chat components with mode selector
-  // Choose between caption, floating, or side panel chat modes
-  const [chatMode, setChatMode] = React.useState<ChatMode>('sidepanel');
+  // Choose between caption, floating, side panel chat modes, or healthcare portal
+  const [chatMode, setChatMode] = React.useState<ChatMode>('healthcare');
 
   // Cedar state for the main text that can be changed by the agent
   const [mainText, setMainText] = React.useState('tell Cedar to change me');
@@ -138,6 +139,10 @@ export default function HomePage() {
       )}
     </div>
   );
+
+  if (chatMode === 'healthcare') {
+    return <EmailPortal />;
+  }
 
   if (chatMode === 'sidepanel') {
     return (

@@ -1,7 +1,7 @@
 import React from 'react';
-import { MessageCircle, PanelRight, Type } from 'lucide-react';
+import { MessageCircle, PanelRight, Type, Heart } from 'lucide-react';
 
-type ChatMode = 'floating' | 'sidepanel' | 'caption';
+type ChatMode = 'floating' | 'sidepanel' | 'caption' | 'healthcare';
 
 interface ChatModeSelectorProps {
   currentMode: ChatMode;
@@ -10,6 +10,12 @@ interface ChatModeSelectorProps {
 
 export function ChatModeSelector({ currentMode, onModeChange }: ChatModeSelectorProps) {
   const modes = [
+    {
+      id: 'healthcare' as const,
+      label: 'Healthcare',
+      icon: <Heart className="w-4 h-4" />,
+      description: 'Healthcare AI Agent Portal',
+    },
     {
       id: 'caption' as const,
       label: 'Caption',
@@ -32,7 +38,7 @@ export function ChatModeSelector({ currentMode, onModeChange }: ChatModeSelector
 
   return (
     <div className="absolute top-4 left-4 bg-white/90 backdrop-blur rounded-lg p-2 shadow-lg border z-10">
-      <div className="text-xs font-semibold mb-2 text-gray-600">Chat Modes</div>
+      <div className="text-xs font-semibold mb-2 text-gray-600">Application Modes</div>
       <div className="flex gap-1">
         {modes.map((mode) => (
           <button
