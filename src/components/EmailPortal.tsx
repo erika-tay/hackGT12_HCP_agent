@@ -1,13 +1,15 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Mail, Send } from "lucide-react";
+import { Mail, Send, FilePlus, Loader2 } from "lucide-react";
 import { 
   useRegisterState, 
   useRegisterFrontendTool,
-  useSubscribeStateToAgentContext 
+  useSubscribeStateToAgentContext,
+  CedarCopilot
 } from 'cedar-os';
 import { z } from 'zod';
+import type { ProviderConfig } from 'cedar-os';
 
 // Magic Wand Icon for the spell
 const MagicWandIcon = () => (
@@ -15,6 +17,55 @@ const MagicWandIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.998 15.998 0 011.622-3.385m5.043.025a15.998 15.998 0 001.622-3.385m3.388 1.62a15.998 15.998 0 00-1.622 3.385m-5.043-.025a15.998 15.998 0 01-3.388-1.621m5.043.025a15.998 15.998 0 013.388 1.622m0-11.218a4.5 4.5 0 11-8.4 2.245 4.5 4.5 0 018.4-2.245z" />
   </svg>
 );
+
+// --- Note Modal Component ---
+const NoteModal = ({ isOpen, onClose, onSave, initialContent, patientName }: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  onSave: (note: string) => void, 
+  initialContent: string, 
+  patientName: string 
+}) => {
+    const [noteContent, setNoteContent] = useState(initialContent);
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        setNoteContent(initialContent);
+    }, [initialContent]);
+
+    if (!isOpen) return null;
+
+    const handleSave = async () => {
+        setIsSaving(true);
+        await onSave(noteContent);
+        setIsSaving(false);
+    }
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-800">Add Note for {patientName}</h3>
+                <p className="text-sm text-gray-500 mb-4">Edit the AI-suggested note below and save it to the patient's chart.</p>
+                <textarea
+                    className="w-full h-32 p-2 border rounded-md text-sm focus:ring-2 focus:ring-blue-500"
+                    value={noteContent}
+                    onChange={(e) => setNoteContent(e.target.value)}
+                />
+                <div className="mt-4 flex justify-end space-x-2">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancel</button>
+                    <button 
+                        onClick={handleSave} 
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300 flex items-center"
+                    >
+                        {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        {isSaving ? 'Saving...' : 'Save Note'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 interface Patient {
   id: string;
@@ -80,6 +131,38 @@ const EmailPortal: React.FC = () => {
   const [draftReply, setDraftReply] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<Error | null>(null);
+  // Note modal states
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [suggestedNote, setSuggestedNote] = useState('');
+
+  // Note creation functionality - integrated with existing Cedar OS system
+
+  // Handle saving note to patient chart
+  const handleSaveNote = async (finalNote: string) => {
+    if (!selectedEmail) return;
+
+    try {
+        const response = await fetch('http://localhost:4001/api/notes/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patientId: selectedEmail.id,
+                noteContent: finalNote,
+            }),
+        });
+        const result = await response.json();
+
+        if (!response.ok || !result.success) throw new Error(result.error || "Failed to save note.");
+
+        alert("Note saved successfully!");
+        setIsNoteModalOpen(false);
+        setSuggestedNote('');
+
+    } catch (e: any) {
+        setAiError(e);
+        alert(`Error saving note: ${e.message}`);
+    }
+  };
 
   // Register email draft as Cedar state - this makes it available to AI agents
   useRegisterState({
@@ -198,7 +281,7 @@ const EmailPortal: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           patientId: selectedPatientId,
-          text: selectedEmail.body,
+          text: selectedEmail?.body || '',
         }),
       });
   
@@ -343,7 +426,15 @@ Michael Brown`
 
 
   return (
-    <div className="flex h-screen bg-gray-100">
+    <>
+      <NoteModal
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        onSave={handleSaveNote}
+        initialContent={suggestedNote}
+        patientName={selectedEmail?.name || ''}
+      />
+      <div className="flex h-screen bg-gray-100">
       {/* Sidebar */}
       <div className="w-64 bg-white shadow-md p-4 flex flex-col">
         <h2 className="text-2xl font-bold mb-6">📧 Mail</h2>
@@ -412,6 +503,11 @@ Michael Brown`
               ← Back to {selectedTab}
             </button>
 
+            {isAiLoading && (
+              <div className="absolute top-2 right-2 text-xs flex items-center gap-2 p-2 bg-blue-100 text-blue-700 rounded-md animate-pulse">
+                <Loader2 className="h-4 w-4 animate-spin"/>Processing...
+              </div>
+            )}
             <h2 className="text-2xl font-bold mb-2">{selectedEmail.email}</h2>
             <p className="text-sm text-gray-600 mb-4">
               Patient: {selectedEmail.name} | MRN: {selectedEmail.mrn}
@@ -420,6 +516,47 @@ Michael Brown`
               <div className="text-gray-700 text-sm whitespace-pre-wrap">
                 {selectedEmail.body}
               </div>
+            </div>
+            
+            <div className="flex items-center justify-between p-3 bg-yellow-100 border border-yellow-200 rounded-md mb-4">
+                <div className="text-xs text-gray-500">
+                    💡 Extract clinical information from this email
+                </div>
+                <button 
+                    onClick={async () => {
+                        if (!selectedEmail) {
+                            alert("Please select an email first to create a note.");
+                            return;
+                        }
+
+                        setIsAiLoading(true);
+                        
+                        try {
+                            const response = await fetch('http://localhost:4001/api/notes/summarize-from-email', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ emailContent: selectedEmail.body }),
+                            });
+                            const result = await response.json();
+
+                            if (!response.ok || !result.success) throw new Error(result.error || "Failed to summarize email.");
+
+                            setSuggestedNote(result.data.suggestedNote);
+                            setIsNoteModalOpen(true);
+
+                        } catch (e: any) {
+                            setAiError(e);
+                            alert(`Error: ${e.message}`);
+                        } finally {
+                            setIsAiLoading(false);
+                        }
+                    }}
+                    disabled={isAiLoading}
+                    className="flex items-center gap-2 px-3 py-1 bg-blue-600 text-white text-xs rounded-md hover:bg-blue-700 disabled:bg-blue-300"
+                >
+                    {isAiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FilePlus size={12} />}
+                    {isAiLoading ? 'Processing...' : 'Add Note'}
+                </button>
             </div>
 
             {/* Reply Box */}
@@ -479,8 +616,22 @@ Michael Brown`
         )}
       </div>
     </div>
+    </>
   );
 };
 
-// Export the component directly - Cedar is already configured at root level
-export default EmailPortal;
+// Export the component wrapped with CedarCopilot
+export default function EmailAppWrapper() {
+  const llmProvider = {
+    provider: 'custom' as const,
+    config: {
+      baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001',
+    }
+  } as ProviderConfig;
+
+  return (
+    <CedarCopilot llmProvider={llmProvider}>
+      <EmailPortal />
+    </CedarCopilot>
+  );
+}
