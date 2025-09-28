@@ -103,9 +103,21 @@ const generateCedarEmailReplyTool = new Tool({
     const agent = new HealthcareAgent();
     return await agent.generateCedarAwareEmailReply(cedarContext);
   }
+const prioritizeEmailsTool = new Tool({
+  id: 'prioritize-emails',
+  description: 'Determine priority of email based on email text and patient data',
+  parameters: z.object({
+    patientId: z.string().describe('Patient ID to get context for'),
+    text: z.string().describe('Email text to analyze')
+  }),
+  execute: async ({ patientId, text }) => {
+    const agent = new HealthcareAgent();
+    return await agent.prioritizeEmail(patientId, text);
+  }
 });
 
 export class HealthcareAgent extends Agent {
+
   constructor() {
     super({
       name: 'HealthcareAgent',
@@ -116,10 +128,12 @@ export class HealthcareAgent extends Agent {
         queryDatabaseTool,
         calculateHealthStatsTool,
         generateEmailReplyTool,
-        generateCedarEmailReplyTool
+        generateCedarEmailReplyTool,
+        prioritizeEmailsTool
       ]
     });
-    
+
+    this.model = this.model;
     console.log('🤖 Mastra Healthcare Agent initialized');
   }
 
@@ -138,6 +152,8 @@ export class HealthcareAgent extends Agent {
         return await this.generateEmailReply(params.patientId, params.originalEmail, params.currentDraft);
       case 'generate-cedar-email-reply':
         return await this.generateCedarAwareEmailReply(params);
+      case 'prioritize-emails':
+        return await this.prioritizeEmail(params.patientId, params.text);
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -266,7 +282,7 @@ export class HealthcareAgent extends Agent {
       return { success: false, error: error.message };
     }
   }
-
+ 
   // Mastra health statistics calculation
   async calculateHealthStats(data: any) {
     try {
@@ -345,6 +361,78 @@ export class HealthcareAgent extends Agent {
     
     return Math.max(0, Math.min(100, score));
   }
+
+  // Prioritize Emails
+  async prioritizeEmail(patientId: string, text: string,) {
+    try {
+      console.log(`📧 Prioritizing email for patient status: ${patientId}`);
+
+      const prompt = `You are an AI assistant prioritizing healthcare emails. 
+      Decide if the priority is "High", "Medium", or "Low".
+      Rules:
+      - HIGH: Urgent symptoms, emergencies, severe health issues, medication problems, critical patient.
+      - MEDIUM: Appointment scheduling, follow-ups, moderate patient concerns.
+      - LOW: General inquiries, admin issues, stable patient updates.
+
+      Respond in JSON format:
+      {
+        "priority": "High" | "Medium" | "Low",
+        "reasoning": "string explanation"
+      }
+
+      Email: """${text}"""
+      Patient Id: ${patientId}`;
+      
+      // Use AI SDK v4 compatible generateText
+      const { generateText } = await import('ai');
+
+      const response = await generateText({
+        model: openai('gpt-4o-mini'),
+        prompt: prompt,
+        temperature: 0.5,
+        maxTokens: 100 // Increased maxTokens for more detailed reasoning
+      });
+
+      console.log(response);
+
+      let rawResponseText = response.text ?? '{}';
+      
+      // Attempt to strip markdown code block wrapper if present
+      if (rawResponseText.startsWith('```json')) {
+        rawResponseText = rawResponseText.substring(rawResponseText.indexOf('{'), rawResponseText.lastIndexOf('}') + 1).trim();
+      }
+
+      const result = JSON.parse(rawResponseText); // parse output safely
+
+      console.log('result', result);
+
+      // Ensure the result has the expected priority and reasoning structure
+      if (!result.priority || !result.reasoning) {
+        throw new Error("AI response missing 'priority' or 'reasoning' fields.");
+      }
+
+      return {
+        success: true,
+        data: {
+          priority: result.priority,
+          reasoning: result.reasoning,
+        },
+        generatedAt: new Date().toISOString(),
+        agent: this.name
+      };
+
+    } catch (error: any) {
+      console.error("❌ Error prioritizing email:", error);
+
+      return {
+        success: false,
+        error: error.message,
+        generatedAt: new Date().toISOString(),
+        agent: this.name
+      };
+    }
+  }
+
 
   // Create Mastra workflow
   createWorkflow(steps: string[]) {
