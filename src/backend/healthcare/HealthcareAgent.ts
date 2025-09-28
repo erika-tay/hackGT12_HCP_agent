@@ -55,6 +55,20 @@ const calculateHealthStatsTool = new Tool({
   }
 });
 
+const generateEmailReplyTool = new Tool({
+  id: 'generate-email-reply',
+  description: 'Generate AI-powered email replies with patient context',
+  parameters: z.object({
+    patientId: z.string().describe('Patient ID to get context for'),
+    originalEmail: z.string().describe('Original email content from patient'),
+    currentDraft: z.string().describe('Current draft text (if any)')
+  }),
+  execute: async ({ patientId, originalEmail, currentDraft }) => {
+    const agent = new HealthcareAgent();
+    return await agent.generateEmailReply(patientId, originalEmail, currentDraft);
+  }
+});
+
 export class HealthcareAgent extends Agent {
   constructor() {
     super({
@@ -64,7 +78,8 @@ export class HealthcareAgent extends Agent {
       tools: [
         getPatientSummaryTool,
         queryDatabaseTool,
-        calculateHealthStatsTool
+        calculateHealthStatsTool,
+        generateEmailReplyTool
       ]
     });
     
@@ -72,7 +87,7 @@ export class HealthcareAgent extends Agent {
   }
 
   // Mastra tool execution
-  async executeTool(toolName: string, params: any) {
+  async executeTool(toolName: string, params: any): Promise<any> {
     console.log(`🔧 Executing tool: ${toolName}`);
     
     switch (toolName) {
@@ -82,6 +97,8 @@ export class HealthcareAgent extends Agent {
         return await this.queryDatabase(params.table, params.filters);
       case 'calculate-health-stats':
         return await this.calculateHealthStats(params.data);
+      case 'generate-email-reply':
+        return await this.generateEmailReply(params.patientId, params.originalEmail, params.currentDraft);
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -298,6 +315,91 @@ export class HealthcareAgent extends Agent {
       startTime: new Date().toISOString(),
       agent: this.name
     };
+  }
+
+  // Generate AI-powered email reply with patient context
+  async generateEmailReply(patientId: string, originalEmail: string, currentDraft: string) {
+    try {
+      console.log('🤖 HealthcareAgent: Generating email reply...');
+      
+      // First, get patient summary using existing tool
+      console.log('🔍 Getting patient context...');
+      const patientSummary = await this.getPatientSummary(patientId);
+      
+      if (!patientSummary.success) {
+        return {
+          success: false,
+          error: 'Failed to get patient context for email generation'
+        };
+      }
+
+      const patientData = patientSummary.data;
+      const prompt = `You are a healthcare professional assistant helping to draft a professional email reply to a patient.
+
+**Patient Information:**
+- Name: ${patientData.patient.name}
+- Date of Birth: ${patientData.patient.dateOfBirth}
+- Health Score: ${patientData.stats.healthScore}/100
+- Risk Level: ${patientData.stats.riskLevel}
+
+**Original Patient Email:**
+${originalEmail}
+
+**Current Draft (if any):**
+${currentDraft}
+
+**Patient Health Context:**
+- Total Lab Results: ${patientData.stats.totalLabs} (${patientData.stats.abnormalLabs} abnormal, ${patientData.stats.criticalLabs} critical)
+- Active Medications: ${patientData.stats.activeMedications}
+- Allergies: ${patientData.patient.allergies.join(', ') || 'None on file'}
+- Recent Alerts: ${patientData.alerts.length}
+
+**Recent Lab Results:** ${JSON.stringify(patientData.recentLabs.slice(0, 3), null, 2)}
+
+**Active Medications:** ${JSON.stringify(patientData.medications.slice(0, 5), null, 2)}
+
+**Instructions:**
+1. Write a professional, empathetic, and informative reply
+2. Address the patient's specific concerns mentioned in their email
+3. Use the health context to provide relevant medical insights (but avoid definitive diagnoses)
+4. Include appropriate next steps or recommendations
+5. Maintain a warm, professional tone suitable for healthcare communication
+6. If there's already a current draft, continue/improve it rather than starting over
+7. Keep the response concise but comprehensive (2-3 paragraphs)
+
+Please generate the email reply:`;
+
+      // Use AI SDK v4 compatible generateText
+      const { generateText } = await import('ai');
+      
+      const response = await generateText({
+        model: openai('gpt-4o-mini'),
+        prompt: prompt,
+        temperature: 0.7,
+        maxTokens: 500
+      });
+
+      const fullReply = response.text || '';
+
+      if (fullReply) {
+        return {
+          success: true,
+          reply: fullReply.trim()
+        };
+      } else {
+        return {
+          success: false,
+          error: 'No response generated'
+        };
+      }
+
+    } catch (error: any) {
+      console.error('❌ HealthcareAgent: Email reply generation failed:', error);
+      return {
+        success: false,
+        error: error.message || 'Email generation failed'
+      };
+    }
   }
 
   // Log agent actions for audit

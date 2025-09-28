@@ -2,11 +2,15 @@
 
 import React, { useState, useEffect } from 'react';
 import { Mail, Send } from "lucide-react";
-import { CedarCopilot } from 'cedar-os';
+import { CedarCopilot, useSpell } from 'cedar-os';
 import type { ProviderConfig } from 'cedar-os';
-import { useCopilotAction, Spell } from '@cedaros/copilot-react'; 
 
-
+// Magic Wand Icon for the spell
+const MagicWandIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.998 15.998 0 011.622-3.385m5.043.025a15.998 15.998 0 001.622-3.385m3.388 1.62a15.998 15.998 0 00-1.622 3.385m-5.043-.025a15.998 15.998 0 01-3.388-1.621m5.043.025a15.998 15.998 0 013.388 1.622m0-11.218a4.5 4.5 0 11-8.4 2.245 4.5 4.5 0 018.4-2.245z" />
+  </svg>
+);
 
 interface Patient {
   id: string;
@@ -66,9 +70,47 @@ const EmailPortal: React.FC = () => {
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [selectedTab, setSelectedTab] = useState<'inbox' | 'sent'>('inbox');
-  const [selectedEmail, setSelectedEmail] = useState<Patient | null>(null);
+  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [draftReply, setDraftReply] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<Error | null>(null);
 
+  // AI-powered email reply generation function
+  const generateEmailReply = async () => {
+    setIsAiLoading(true);
+    setAiError(null);
+
+    try {
+      const response = await fetch(`http://localhost:4001/api/emails/${selectedEmail.id}/draft-reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patientId: selectedPatientId,
+          originalEmail: selectedEmail.body,
+          currentDraft: draftReply
+        }),
+      });
+      
+      if (!response.body) throw new Error("Response body is empty.");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let currentFullText = draftReply;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        currentFullText += chunk;
+        setDraftReply(currentFullText);
+      }
+    } catch (error: any) {
+      setAiError(error);
+      console.error('Email reply generation error:', error);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
 
   // Mock patient data (in real app, this would come from props or API)
   const mockPatients: Patient[] = [
@@ -143,12 +185,7 @@ Michael Brown`
     }
   };
 
-  const callAItoReply = async (emailBody: string | null) => {
-    if (!selectedEmail) {
-      alert('Please select an email first!');
-      return;
-    }
-  }
+
 
   const fetchPatientSummaryWithMastra = async (patientId: string) => {
     if (!patientId) return;
@@ -204,6 +241,7 @@ Michael Brown`
           onClick={() => {
             setSelectedTab('inbox');
             setSelectedEmail(null);
+            setDraftReply('');
           }}
           className={`flex items-center gap-2 px-3 py-2 rounded-md mb-2 ${
             selectedTab === 'inbox' ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'
@@ -237,6 +275,7 @@ Michael Brown`
                   onClick={() => {
                     setSelectedEmail(patient);
                     setSelectedPatientId(patient.id);
+                    setDraftReply('');
                   }}
                   className="bg-white border rounded-md p-4 cursor-pointer hover:bg-gray-50 flex items-center gap-3"
                 >
@@ -275,26 +314,41 @@ Michael Brown`
 
             {/* Reply Box */}
             <textarea
-              rows={3}
-              placeholder="Type your reply here..."
-              className="w-full border border-gray-300 rounded-md p-2 text-sm mb-2 focus:ring-2 focus:ring-blue-500"
+              rows={5}
+              placeholder="Type your reply here, or use AI to generate one..."
+              className="w-full border border-gray-300 rounded-md p-3 text-sm mb-3 focus:ring-2 focus:ring-blue-500"
+              value={draftReply}
               onChange={(e) => setDraftReply(e.target.value)}
+              disabled={isAiLoading}
             />
-            <div className="flex gap-2">
-              <button className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
-                📨 Send Reply
-              </button>
-              <button className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
-                ➡️ Forward
-              </button>
-
-              <button 
-                onClick={() => callAItoReply(null)}
-                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
-              >
-              Generate Template Reply
-              </button>
+            
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex gap-2">
+                <button 
+                  onClick={generateEmailReply}
+                  disabled={isAiLoading || !selectedEmail}
+                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <MagicWandIcon />
+                  {isAiLoading ? 'Generating...' : (draftReply ? 'Continue Draft' : 'Draft Reply')}
+                </button>
+              </div>
+              
+              <div className="flex gap-2">
+                <button className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
+                  📨 Send Reply
+                </button>
+                <button className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
+                  ➡️ Forward
+                </button>
+              </div>
             </div>
+            
+            {aiError && (
+              <div className="text-sm text-red-500 mb-2">
+                Error: {aiError.message}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -302,4 +356,18 @@ Michael Brown`
   );
 };
 
-export default EmailPortal;
+// Wrapped component with Cedar Copilot
+const EmailPortalWithCedar: React.FC = () => {
+  const llmProvider: ProviderConfig = {
+    provider: 'openai',
+    apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY || '',
+  };
+
+  return (
+    <CedarCopilot llmProvider={llmProvider}>
+      <EmailPortal />
+    </CedarCopilot>
+  );
+};
+
+export default EmailPortalWithCedar;
