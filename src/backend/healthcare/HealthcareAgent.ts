@@ -1,6 +1,7 @@
 import { Agent, Tool } from '@mastra/core';
 import { createClient } from '@supabase/supabase-js';
 import { openai } from '@ai-sdk/openai';
+import { generateText } from 'ai';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 
@@ -82,6 +83,7 @@ const calculateHealthStatsTool = new Tool({
   }
 });
 
+
 const generateEmailReplyTool = new Tool({
   id: 'generate-email-reply',
   description: 'Generate AI-powered email replies with patient context',
@@ -148,6 +150,64 @@ const prioritizeEmailsTool = new Tool({
   }
 });
 
+const generateClinicalNoteTool = new Tool({
+  id: 'generate-clinical-note',
+  description: 'Generate or enhance clinical documentation using patient context and medical data',
+  inputSchema: z.object({
+    patientId: z.string().describe('Patient ID to generate note for'),
+    noteType: z.string().describe('Type of clinical note (Progress Note, Assessment, etc.)'),
+    currentContent: z.string().describe('Current note content if enhancing existing note'),
+    instruction: z.string().describe('Specific instruction for note generation'),
+    enhanceExisting: z.boolean().describe('Whether to enhance existing content or start fresh')
+  }),
+  execute: async (context) => {
+    const agent = new HealthcareAgent();
+    return await agent.generateClinicalNote(context.args);
+  }
+});
+
+const summarizeEmailForNoteTool = new Tool({
+  id: 'summarize-email-for-note',
+  description: 'Analyzes a patient email and extracts a concise, one-sentence summary to be used as a clinical note.',
+  parameters: z.object({
+    emailContent: z.string().describe("The raw text content from the patient's email.")
+  }),
+  execute: async ({ emailContent }) => {
+    const agent = new HealthcareAgent();
+    return await agent.summarizeEmailForNote(emailContent);
+  }
+});
+
+const saveClinicalNoteTool = new Tool({
+    id: 'save-clinical-note',
+    description: "Saves a clinical note to the patient's chart in the clinical_notes table.",
+    parameters: z.object({
+        patientId: z.string().describe("The ID of the patient the note belongs to."),
+        noteContent: z.string().describe("The final text content of the note to be saved.")
+    }),
+    execute: async ({ patientId, noteContent }) => {
+        const agent = new HealthcareAgent();
+        return await agent.saveClinicalNote(patientId, noteContent);
+    }
+});
+
+// --- NEW TOOL DEFINITION ---
+const addNoteFromEmailTool = new Tool({
+  id: 'add-note-from-email',
+  description: 'Analyzes email content, converts it into a structured clinical note, and saves it to the patient chart.',
+  parameters: z.object({
+    patientId: z.string().describe("The ID of the patient the note belongs to."),
+    emailContent: z.string().describe("The raw text content from the patient's email.")
+  }),
+  execute: async ({ patientId, emailContent }) => {
+    const agent = new HealthcareAgent();
+    return await agent.addNoteFromEmail(patientId, emailContent);
+  }
+});
+
+
+
+
 export class HealthcareAgent extends Agent {
 
   constructor() {
@@ -161,7 +221,10 @@ export class HealthcareAgent extends Agent {
         calculateHealthStatsTool,
         generateEmailReplyTool,
         generateCedarEmailReplyTool,
-        prioritizeEmailsTool
+        prioritizeEmailsTool,
+        generateClinicalNoteTool, 
+        summarizeEmailForNoteTool,
+        saveClinicalNoteTool
       ]
     });
 
@@ -186,6 +249,10 @@ export class HealthcareAgent extends Agent {
         return await this.generateCedarAwareEmailReply(params);
       case 'prioritize-emails':
         return await this.prioritizeEmail(params.patientId, params.text);
+      case 'summarize-email-for-note':
+        return await this.summarizeEmailForNote(params.emailContent);
+      case 'save-clinical-note':
+        return await this.saveClinicalNote(params.patientId, params.noteContent);
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -358,6 +425,93 @@ Determine the priority level (HIGH/MEDIUM/LOW) and provide brief reasoning. Resp
     }
   }
 
+
+  async summarizeEmailForNote(emailContent: string) {
+    try {
+      console.log(`🧠 Summarizing email content for a clinical note...`);
+
+      const prompt = `Analyze the following patient email. Extract the primary subjective complaint or piece of information.
+      Respond with ONLY a single, concise sentence suitable for a clinical note.
+      For example: "Patient reports experiencing headaches for the past 3 days." OR "Patient reports their home blood pressure reading was 140/90 this morning."
+
+      **Patient Email:**
+      """
+      ${emailContent}
+      """
+      `;
+
+      try {
+        const { text } = await generateText({
+          model: openai('gpt-4o-mini'),
+          prompt,
+          system: `You are a medical AI assistant that summarizes patient communication into a concise clinical statement.`
+        });
+        
+        return {
+          success: true,
+          data: { suggestedNote: text.trim() }
+        };
+      } catch (error: any) {
+        console.error('❌ OpenAI API Error:', error.message);
+        if (error.message?.includes('quota') || error.message?.includes('billing')) {
+          throw new Error('OpenAI quota exceeded. Please check your API key and billing settings.');
+        }
+        throw error;
+      }
+
+    } catch (error: any) {
+      console.error('❌ Error summarizing email for note:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to summarize email.'
+      };
+    }
+  }
+
+  async saveClinicalNote(patientId: string, noteContent: string) {
+    try {
+      console.log(`💾 Saving note for patient ${patientId}`);
+
+      if (!noteContent.trim()) {
+        throw new Error("Note content cannot be empty.");
+      }
+
+      const { data, error } = await supabase
+        .from('clinical_notes')
+        .insert({
+          patient_id: patientId,
+          note_date: new Date().toISOString().split('T')[0],
+          note_type: 'Email Note',
+          author: "Dr. Anya", 
+          subject: "Follow Up on Your Recent Email",
+          content: noteContent.trim()
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      
+      console.log(`✅ Note saved successfully with ID: ${data.id}`);
+      await this.logAgentAction('save-encounter-note', patientId, true);
+
+      return {
+        success: true,
+        data: {
+          newNoteId: data.id,
+          message: "Note successfully saved to patient's chart."
+        }
+      };
+
+    } catch (error: any) {
+        console.error('❌ Error saving encounter note:', error);
+        await this.logAgentAction('save-encounter-note', patientId, false, error.message);
+        return {
+            success: false,
+            error: error.message || 'Failed to save note to the database.'
+        };
+    }
+  }
+
   // Mastra database query tool
   async queryDatabase(table: string, options: any = {}) {
     try {
@@ -488,13 +642,10 @@ Determine the priority level (HIGH/MEDIUM/LOW) and provide brief reasoning. Resp
       Patient Id: ${patientId}`;
       
       // Use AI SDK v4 compatible generateText
-      const { generateText } = await import('ai');
-
       const response = await generateText({
         model: openai('gpt-4o-mini'),
         prompt: prompt,
-        temperature: 0.5,
-        maxTokens: 100 // Increased maxTokens for more detailed reasoning
+        temperature: 0.5
       });
 
       console.log(response);
@@ -601,13 +752,10 @@ ${currentDraft}
 Please generate the email reply:`;
 
       // Use AI SDK v4 compatible generateText
-      const { generateText } = await import('ai');
-      
       const response = await generateText({
         model: openai('gpt-4o-mini'),
         prompt: prompt,
-        temperature: 0.7,
-        maxTokens: 500
+        temperature: 0.7
       });
 
       const fullReply = response.text || '';
@@ -707,8 +855,6 @@ CONTINUE the existing draft:
 Generate the email reply (${cedarContext.draft.isEmpty ? 'new' : 'continuation'}):`;
 
       // Use AI SDK v4 compatible generateText
-      const { generateText } = await import('ai');
-      
       const response = await generateText({
         model: openai('gpt-4o-mini'),
         prompt: prompt,
@@ -736,6 +882,96 @@ Generate the email reply (${cedarContext.draft.isEmpty ? 'new' : 'continuation'}
         error: error.message || 'Cedar-aware email generation failed'
       };
     }
+  }
+
+  // Clinical Note Generation Method
+  async generateClinicalNote(params: {
+    patientId: string;
+    noteType: string;
+    currentContent: string;
+    instruction: string;
+    enhanceExisting: boolean;
+  }) {
+    try {
+      console.log(`📝 Generating clinical note for patient ${params.patientId}`);
+      
+      // Get comprehensive patient data for context
+      const patientData = await this.getPatientSummary(params.patientId);
+      
+      if (!patientData?.success) {
+        throw new Error('Failed to get patient context for note generation');
+      }
+
+      const prompt = params.enhanceExisting && params.currentContent
+        ? `Enhance and continue the following clinical note:
+
+**Current Note Content:**
+${params.currentContent}
+
+**Instruction:** ${params.instruction}
+
+**Patient Context:**
+${this.formatPatientContextForNote(patientData.data)}
+
+Please continue or enhance this clinical note following professional medical documentation standards. Maintain SOAP format where appropriate and ensure clinical accuracy.`
+        : `Generate a comprehensive ${params.noteType} for this patient:
+
+**Instruction:** ${params.instruction}
+
+**Patient Context:**
+${this.formatPatientContextForNote(patientData.data)}
+
+Please generate a professional clinical note following standard medical documentation practices. Use SOAP format where appropriate (Subjective, Objective, Assessment, Plan).`;
+
+      const result = await generateText({
+        model: openai('gpt-4o-mini'),
+        prompt,
+        system: `You are a medical AI assistant specialized in clinical documentation. Generate comprehensive, accurate, and professional clinical notes based on patient data. Always maintain medical accuracy and follow standard documentation practices.`
+      });
+
+      await this.logAgentAction('generate-clinical-note', params.patientId, true);
+      
+      return {
+        success: true,
+        note: result.text,
+        noteType: params.noteType,
+        generatedBy: 'Mastra Healthcare Agent',
+        timestamp: new Date().toISOString(),
+        enhanced: params.enhanceExisting
+      };
+
+    } catch (error: any) {
+      console.error('❌ Clinical note generation error:', error);
+      await this.logAgentAction('generate-clinical-note', params.patientId, false, error.message);
+      
+      return {
+        success: false,
+        error: error.message || 'Clinical note generation failed'
+      };
+    }
+  }
+
+  // Helper method to format patient context for clinical notes
+  private formatPatientContextForNote(patientData: any): string {
+    if (!patientData) return 'Patient data not available';
+
+    return `
+**Patient Information:**
+- Name: ${patientData.patient?.name || 'Unknown'}
+- Date of Birth: ${patientData.patient?.dateOfBirth || 'Unknown'}
+- Health Score: ${patientData.stats?.healthScore || 'N/A'}/100
+- Risk Level: ${patientData.stats?.riskLevel || 'Unknown'}
+- Allergies: ${patientData.patient?.allergies?.join(', ') || 'None on file'}
+
+**Clinical Summary:**
+- Total Lab Results: ${patientData.stats?.totalLabs || 0} (${patientData.stats?.abnormalLabs || 0} abnormal, ${patientData.stats?.criticalLabs || 0} critical)
+- Active Medications: ${patientData.stats?.activeMedications || 0}
+- Recent Alerts: ${patientData.alerts?.length || 0}
+
+**Recent Lab Results:** ${JSON.stringify(patientData.recentLabs?.slice(0, 3) || [], null, 2)}
+
+**Active Medications:** ${JSON.stringify(patientData.medications?.slice(0, 5) || [], null, 2)}
+    `.trim();
   }
 
   // Log agent actions for audit
