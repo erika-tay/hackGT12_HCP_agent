@@ -69,6 +69,42 @@ const generateEmailReplyTool = new Tool({
   }
 });
 
+const generateCedarEmailReplyTool = new Tool({
+  id: 'generate-cedar-email-reply',
+  description: 'Generate context-aware email replies using Cedar OS rich context',
+  parameters: z.object({
+    email: z.object({
+      id: z.string(),
+      subject: z.string(),
+      body: z.string(),
+      patient: z.object({
+        name: z.string(),
+        mrn: z.string(),
+        id: z.string()
+      })
+    }),
+    draft: z.object({
+      current: z.string(),
+      isEmpty: z.boolean(),
+      wordCount: z.number(),
+      hasGreeting: z.boolean(),
+      hasClosing: z.boolean(),
+      sentiment: z.string()
+    }),
+    ui: z.object({
+      selectedTab: z.string(),
+      hasPatientSummary: z.boolean(),
+      patientHealthScore: z.number().nullable(),
+      riskLevel: z.string().nullable()
+    }),
+    instruction: z.string()
+  }),
+  execute: async (cedarContext) => {
+    const agent = new HealthcareAgent();
+    return await agent.generateCedarAwareEmailReply(cedarContext);
+  }
+});
+
 export class HealthcareAgent extends Agent {
   constructor() {
     super({
@@ -79,7 +115,8 @@ export class HealthcareAgent extends Agent {
         getPatientSummaryTool,
         queryDatabaseTool,
         calculateHealthStatsTool,
-        generateEmailReplyTool
+        generateEmailReplyTool,
+        generateCedarEmailReplyTool
       ]
     });
     
@@ -99,6 +136,8 @@ export class HealthcareAgent extends Agent {
         return await this.calculateHealthStats(params.data);
       case 'generate-email-reply':
         return await this.generateEmailReply(params.patientId, params.originalEmail, params.currentDraft);
+      case 'generate-cedar-email-reply':
+        return await this.generateCedarAwareEmailReply(params);
       default:
         throw new Error(`Unknown tool: ${toolName}`);
     }
@@ -398,6 +437,111 @@ Please generate the email reply:`;
       return {
         success: false,
         error: error.message || 'Email generation failed'
+      };
+    }
+  }
+
+  // Generate Cedar OS context-aware email reply
+  async generateCedarAwareEmailReply(cedarContext: any) {
+    try {
+      console.log('🔮 HealthcareAgent: Generating Cedar-aware email reply...');
+      console.log(`📧 Context: ${cedarContext.email.subject}`);
+      console.log(`✏️ Draft: ${cedarContext.draft.isEmpty ? 'Empty' : `${cedarContext.draft.wordCount} words, ${cedarContext.draft.sentiment} tone`}`);
+      
+      // Get patient summary for medical context
+      console.log('🏥 Getting patient medical context...');
+      const patientSummary = await this.getPatientSummary(cedarContext.email.patient.id);
+      
+      if (!patientSummary.success) {
+        return {
+          success: false,
+          error: 'Failed to get patient medical context for Cedar reply'
+        };
+      }
+
+      const patientData = patientSummary.data;
+      const prompt = `You are a healthcare professional assistant with Cedar OS context awareness. Generate a contextually appropriate email reply.
+
+**CEDAR CONTEXT ANALYSIS:**
+${cedarContext.instruction}
+
+**EMAIL TO RESPOND TO:**
+Subject: ${cedarContext.email.subject}
+From: ${cedarContext.email.patient.name} (MRN: ${cedarContext.email.patient.mrn})
+
+Content:
+${cedarContext.email.body}
+
+**CURRENT DRAFT STATE:**
+${cedarContext.draft.isEmpty ? 'No draft started' : `
+Current Draft (${cedarContext.draft.wordCount} words, ${cedarContext.draft.sentiment} sentiment):
+"${cedarContext.draft.current}"
+
+Analysis:
+- Has greeting: ${cedarContext.draft.hasGreeting}
+- Has closing: ${cedarContext.draft.hasClosing}
+- Current tone: ${cedarContext.draft.sentiment}
+`}
+
+**PATIENT MEDICAL CONTEXT:**
+- Name: ${patientData?.patient.name}
+- Health Score: ${patientData?.stats.healthScore}/100
+- Risk Level: ${patientData?.stats.riskLevel}
+- Lab Results: ${patientData?.stats.totalLabs} total (${patientData?.stats.abnormalLabs} abnormal)
+- Active Medications: ${patientData?.stats.activeMedications}
+- Allergies: ${patientData?.patient.allergies.join(', ') || 'None on file'}
+
+**UI CONTEXT:**
+- Tab: ${cedarContext.ui.selectedTab}
+- Patient summary loaded: ${cedarContext.ui.hasPatientSummary}
+
+**INSTRUCTIONS:**
+${cedarContext.draft.isEmpty ? `
+CREATE a new professional email reply:
+1. Start with appropriate greeting
+2. Address patient's specific concerns from their email
+3. Use medical context to provide relevant insights
+4. Include appropriate next steps
+5. End with professional closing
+` : `
+CONTINUE the existing draft:
+1. Maintain the same ${cedarContext.draft.sentiment} tone and style
+2. Build upon what's already written - don't restart
+3. ${cedarContext.draft.hasGreeting ? 'Continue from where the draft left off' : 'Add greeting if missing'}
+4. ${cedarContext.draft.hasClosing ? 'Draft is nearly complete' : 'Add appropriate closing'}
+5. Seamlessly extend the existing content
+`}
+
+Generate the email reply (${cedarContext.draft.isEmpty ? 'new' : 'continuation'}):`;
+
+      // Use AI SDK v4 compatible generateText
+      const { generateText } = await import('ai');
+      
+      const response = await generateText({
+        model: openai('gpt-4o-mini'),
+        prompt: prompt,
+        temperature: 0.7
+      });
+
+      const fullReply = response.text || '';
+
+      if (fullReply) {
+        return {
+          success: true,
+          reply: fullReply.trim()
+        };
+      } else {
+        return {
+          success: false,
+          error: 'No Cedar-aware response generated'
+        };
+      }
+
+    } catch (error: any) {
+      console.error('❌ HealthcareAgent: Cedar-aware email reply generation failed:', error);
+      return {
+        success: false,
+        error: error.message || 'Cedar-aware email generation failed'
       };
     }
   }
