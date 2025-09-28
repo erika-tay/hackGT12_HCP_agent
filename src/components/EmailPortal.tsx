@@ -2,8 +2,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { Mail, Send } from "lucide-react";
-import { CedarCopilot, useSpell } from 'cedar-os';
-import type { ProviderConfig } from 'cedar-os';
+import { 
+  useRegisterState, 
+  useRegisterFrontendTool,
+  useSubscribeStateToAgentContext 
+} from 'cedar-os';
+import { z } from 'zod';
 
 // Magic Wand Icon for the spell
 const MagicWandIcon = () => (
@@ -64,51 +68,125 @@ interface PatientSummary {
   };
 }
 
+// Simplified Cedar OS integration using native patterns
+
 const EmailPortal: React.FC = () => {
   const [patientSummary, setPatientSummary] = useState<PatientSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState('');
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [selectedTab, setSelectedTab] = useState<'inbox' | 'sent'>('inbox');
-  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
+  const [selectedEmail, setSelectedEmail] = useState<Patient | null>(null);
   const [draftReply, setDraftReply] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<Error | null>(null);
 
-  // AI-powered email reply generation function
-  const generateEmailReply = async () => {
-    setIsAiLoading(true);
-    setAiError(null);
+  // Register email draft as Cedar state - this makes it available to AI agents
+  useRegisterState({
+    key: 'emailDraft',
+    description: 'Current email draft being composed',
+    value: draftReply,
+    setValue: setDraftReply,
+    stateSetters: {
+      generateReply: {
+        name: 'generateEmailReply',
+        description: 'Generate or continue an email reply using healthcare context',
+        argsSchema: z.object({
+          continueExisting: z.boolean().describe('Whether to continue existing draft or start fresh'),
+        }),
+        execute: (currentDraft: string, setValue: (newValue: string) => void, args: { continueExisting: boolean }) => {
+          // This will be handled by the backend via Cedar's agent system
+          setValue(currentDraft); // Placeholder - backend will update via Cedar
+        },
+      },
+    },
+  });
+
+  // Subscribe selected email context to Cedar agents
+  useSubscribeStateToAgentContext(
+    'currentEmailContext', 
+    () => ({
+      selectedEmail: selectedEmail ? {
+        id: selectedEmail.id,
+        subject: selectedEmail.email,
+        body: selectedEmail.body,
+        patient: {
+          name: selectedEmail.name,
+          mrn: selectedEmail.mrn,
+          id: selectedEmail.id
+        }
+      } : null,
+      patientSummary: patientSummary?.data || null,
+      draftState: {
+        current: draftReply,
+        isEmpty: !draftReply.trim(),
+        wordCount: draftReply.trim().split(/\s+/).filter(w => w).length,
+      }
+    }), 
+    {
+      showInChat: false, // Don't show in chat, just provide context
+      color: '#9333EA',
+    }
+  );
+
+  // Register frontend tool for Cedar AI agents to use
+  useRegisterFrontendTool({
+    name: 'generateHealthcareEmailReply',
+    description: 'Generate contextual email reply for healthcare communication',
+    argsSchema: z.object({
+      instruction: z.string().describe('Specific instruction for the email reply generation'),
+      continueExisting: z.boolean().optional().describe('Whether to continue existing draft'),
+    }),
+    execute: async (args: { instruction: string; continueExisting?: boolean }) => {
+      if (!selectedEmail) return;
+
+      console.log('🏥 Cedar AI executing healthcare email reply generation:', args);
+      await handleGenerateReply(args.instruction, args.continueExisting);
+    },
+  });
+
+  // Direct function for UI button clicks
+  const handleGenerateReply = async (instruction?: string, continueExisting?: boolean) => {
+    if (!selectedEmail) return;
+
+    console.log('🏥 Generating healthcare email reply...');
 
     try {
+      // Simple call to our healthcare backend - minimal frontend logic
       const response = await fetch(`http://localhost:4001/api/emails/${selectedEmail.id}/draft-reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          patientId: selectedPatientId,
+          patientId: selectedEmail.id,
           originalEmail: selectedEmail.body,
-          currentDraft: draftReply
+          currentDraft: draftReply,
+          instruction: instruction || (draftReply ? 
+            'Continue and improve the existing email draft with professional healthcare context' : 
+            'Generate a professional healthcare email reply based on the patient context and original email'),
+          continueExisting: continueExisting ?? !!draftReply.trim()
         }),
       });
-      
-      if (!response.body) throw new Error("Response body is empty.");
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let currentFullText = draftReply;
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        currentFullText += chunk;
-        setDraftReply(currentFullText);
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
       }
-    } catch (error: any) {
-      setAiError(error);
-      console.error('Email reply generation error:', error);
-    } finally {
-      setIsAiLoading(false);
+
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulatedText = continueExisting ? draftReply : '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          accumulatedText += chunk;
+          setDraftReply(accumulatedText);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Failed to generate email reply:', error);
+      alert('Failed to generate email reply. Please check if the healthcare server is running on port 4001.');
     }
   };
 
@@ -351,18 +429,25 @@ Michael Brown`
               className="w-full border border-gray-300 rounded-md p-3 text-sm mb-3 focus:ring-2 focus:ring-blue-500"
               value={draftReply}
               onChange={(e) => setDraftReply(e.target.value)}
-              disabled={isAiLoading}
+
             />
             
             <div className="flex items-center justify-between mb-3">
               <div className="flex gap-2">
                 <button 
-                  onClick={generateEmailReply}
-                  disabled={isAiLoading || !selectedEmail}
+                  onClick={() => {
+                    if (selectedEmail) {
+                      console.log('🔮 Cedar: Triggering healthcare email reply generation');
+                      // Call our healthcare backend directly
+                      handleGenerateReply();
+                    }
+                  }}
+                  disabled={!selectedEmail}
                   className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Use CARE to generate contextual healthcare email reply"
                 >
                   <MagicWandIcon />
-                  {isAiLoading ? 'Generating...' : (draftReply ? 'Continue Draft' : 'Draft Reply')}
+                  {draftReply ? '✨ Continue with CARE' : '✨ Generate with CARE'}
                 </button>
               </div>
               
@@ -387,11 +472,9 @@ Michael Brown`
 
             </div>
             
-            {aiError && (
-              <div className="text-sm text-red-500 mb-2">
-                Error: {aiError.message}
-              </div>
-            )}
+            <div className="text-xs text-gray-500 mt-2">
+              💡 CARE will use patient context and medical data automatically
+            </div>
           </div>
         )}
       </div>
@@ -399,18 +482,5 @@ Michael Brown`
   );
 };
 
-// Wrapped component with Cedar Copilot
-const EmailPortalWithCedar: React.FC = () => {
-  const llmProvider: ProviderConfig = {
-    provider: 'openai',
-    apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY || '',
-  };
-
-  return (
-    <CedarCopilot llmProvider={llmProvider}>
-      <EmailPortal />
-    </CedarCopilot>
-  );
-};
-
-export default EmailPortalWithCedar;
+// Export the component directly - Cedar is already configured at root level
+export default EmailPortal;

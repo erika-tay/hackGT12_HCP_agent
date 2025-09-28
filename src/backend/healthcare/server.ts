@@ -207,6 +207,119 @@ app.post('/api/agent/execute-tool', async (req, res) => {
 });
 
 // ===================
+// EMAIL REPLY GENERATION ENDPOINT
+// ===================
+
+app.post('/api/emails/:patientId/draft-reply', async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const { originalEmail, currentDraft } = req.body;
+    
+    console.log(`📧 API: Generating email reply for patient ${patientId}`);
+    
+    // Use Mastra agent tool execution for email generation
+    const result = await healthcareAgent.executeTool('generate-email-reply', { 
+      patientId,
+      originalEmail,
+      currentDraft: currentDraft || ''
+    });
+    
+    if (result.success) {
+      console.log(`✅ API: Email reply generated successfully`);
+      
+      // Set up Server-Sent Events for streaming response
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+
+      // Stream the response
+      const replyText = result.reply;
+      const words = replyText.split(' ');
+      
+      for (let i = 0; i < words.length; i++) {
+        res.write(words[i] + ' ');
+        await new Promise(resolve => setTimeout(resolve, 50)); // Small delay for streaming effect
+      }
+      
+      res.end();
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error || 'Failed to generate reply'
+      });
+    }
+    
+  } catch (error: any) {
+    console.error('❌ API: Email reply generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
+// ===================
+// CEDAR OS CONTEXT-AWARE EMAIL REPLY ENDPOINT
+// ===================
+
+app.post('/api/emails/cedar-reply', async (req, res) => {
+  try {
+    const cedarContext = req.body;
+    
+    console.log(`🔮 Cedar API: Context-aware email generation for patient ${cedarContext.email.patient.id}`);
+    console.log(`📝 Cedar Context: Draft state - ${cedarContext.draft.isEmpty ? 'empty' : `${cedarContext.draft.wordCount} words`}`);
+    
+    // Use Mastra agent tool execution with Cedar context
+    const result = await healthcareAgent.executeTool('generate-cedar-email-reply', cedarContext);
+    
+    if (result.success) {
+      console.log(`✅ Cedar API: Context-aware reply generated successfully`);
+      
+      // Set up Server-Sent Events for streaming response
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+
+      // Stream the response with realistic delays
+      const replyText = result.reply;
+      const sentences = replyText.split('. ').filter((s: string) => s.trim());
+      
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i] + (i < sentences.length - 1 ? '. ' : '');
+        const words = sentence.split(' ');
+        
+        for (const word of words) {
+          res.write(word + ' ');
+          await new Promise(resolve => setTimeout(resolve, 30)); // Realistic typing speed
+        }
+      }
+      
+      res.end();
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error || 'Failed to generate context-aware reply'
+      });
+    }
+    
+  } catch (error: any) {
+    console.error('❌ Cedar API: Context-aware reply generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
+// ===================
 // HEALTH CHECK ENDPOINT
 // ===================
 
