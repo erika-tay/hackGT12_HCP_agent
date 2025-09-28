@@ -2,12 +2,18 @@
 
 import React, { useState, useEffect } from 'react';
 import { Mail, Send } from "lucide-react";
+import { CedarCopilot } from 'cedar-os';
+import type { ProviderConfig } from 'cedar-os';
+import { useCopilotAction, Spell } from '@cedaros/copilot-react'; 
+
+
 
 interface Patient {
   id: string;
   name: string;
   mrn: string;
   email: string;
+  body : string;
 }
 
 interface AgentStatus {
@@ -61,6 +67,8 @@ const EmailPortal: React.FC = () => {
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [selectedTab, setSelectedTab] = useState<'inbox' | 'sent'>('inbox');
   const [selectedEmail, setSelectedEmail] = useState<Patient | null>(null);
+  const [draftReply, setDraftReply] = useState('');
+
 
   // Mock patient data (in real app, this would come from props or API)
   const mockPatients: Patient[] = [
@@ -68,19 +76,54 @@ const EmailPortal: React.FC = () => {
       id: '550e8400-e29b-41d4-a716-446655440000', 
       name: 'John Smith', 
       mrn: 'MRN001',
-      email: 'URGENT: Cardiac Enzymes Elevated - Immediate Review Required'
+      email: 'URGENT: Cardiac Enzymes Elevated - Immediate Review Required',
+      body: `*** AUTOMATED CLINICAL ALERT ***
+
+IMMEDIATE ATTENTION REQUIRED
+
+Patient: John Smith (MRN: MRN001)
+Alert Trigger: Critical Lab Value Detected
+
+Details:
+Recent cardiac enzyme panel returned values indicating a high probability of an acute cardiac event.
+
+Troponin I: 15.2 ng/mL (Reference: <0.04 ng/mL) - CRITICAL
+
+CK-MB: 8.5 ng/mL (Reference: 0.6-6.3 ng/mL) - HIGH
+
+Please review the patient's full chart, including recent ECGs and medication history, and take immediate action.
+
+This is an automated notification from the Clinical Decision Support System.
+      `
     },
     { 
       id: '6ba7b810-9dad-11d1-80b4-00c04fd430c8', 
       name: 'Sarah Johnson', 
       mrn: 'MRN002',
-      email: 'Lab Results: Diabetes Management - A1C Results Available'
+      email: 'Lab Results: Diabetes Management - A1C Results Available',
+      body: `Hi Dr. Anya's office,
+
+I saw on the portal that my latest A1c results came in. It looks like the number is 7.2%, which seems a little high to me.
+
+Could you please let me know if I should be concerned or if there's anything I should change with my diet or metformin? Just want to stay on top of things.
+
+Thanks,
+Sarah Johnson
+      `
     },
     { 
       id: '6ba7b811-9dad-11d1-80b4-00c04fd430c8', 
       name: 'Michael Brown', 
       mrn: 'MRN003', 
-      email: 'Prescription Refill Request - Cholesterol Medication Due'
+      email: "Prescription Refill Request - Cholesterol Medication Due",
+      body: `Hello, I hope this is the right place to ask. I'm running low on my cholesterol medication, Atorvastatin 20mg, and the bottle says I have no refills left.
+
+Could you please send a new 90-day prescription to my usual pharmacy (CVS on Main St)?
+
+Thank you for your help!
+
+Best,
+Michael Brown`
     }
   ];
 
@@ -99,6 +142,13 @@ const EmailPortal: React.FC = () => {
       setAgentStatus(null);
     }
   };
+
+  const callAItoReply = async (emailBody: string | null) => {
+    if (!selectedEmail) {
+      alert('Please select an email first!');
+      return;
+    }
+  }
 
   const fetchPatientSummaryWithMastra = async (patientId: string) => {
     if (!patientId) return;
@@ -184,7 +234,10 @@ const EmailPortal: React.FC = () => {
               {mockPatients.map(patient => (
                 <div
                   key={patient.id}
-                  onClick={() => setSelectedEmail(patient)}
+                  onClick={() => {
+                    setSelectedEmail(patient);
+                    setSelectedPatientId(patient.id);
+                  }}
                   className="bg-white border rounded-md p-4 cursor-pointer hover:bg-gray-50 flex items-center gap-3"
                 >
                   {/* Priority dot placeholder (could be added dynamically from patientSummary later) */}
@@ -215,9 +268,9 @@ const EmailPortal: React.FC = () => {
               Patient: {selectedEmail.name} | MRN: {selectedEmail.mrn}
             </p>
             <div className="bg-white border rounded-md p-4 mb-4">
-              <p className="text-gray-700 text-sm">
-                Full details would be shown here, including patient summary and relevant labs.
-              </p>
+              <div className="text-gray-700 text-sm whitespace-pre-wrap">
+                {selectedEmail.body}
+              </div>
             </div>
 
             {/* Reply Box */}
@@ -225,6 +278,7 @@ const EmailPortal: React.FC = () => {
               rows={3}
               placeholder="Type your reply here..."
               className="w-full border border-gray-300 rounded-md p-2 text-sm mb-2 focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => setDraftReply(e.target.value)}
             />
             <div className="flex gap-2">
               <button className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
@@ -232,6 +286,13 @@ const EmailPortal: React.FC = () => {
               </button>
               <button className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
                 ➡️ Forward
+              </button>
+
+              <button 
+                onClick={() => callAItoReply(null)}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+              Generate Template Reply
               </button>
             </div>
           </div>
