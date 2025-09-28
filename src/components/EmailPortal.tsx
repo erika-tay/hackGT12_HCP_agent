@@ -8,15 +8,19 @@ import {
   useSubscribeStateToAgentContext,
   CedarCopilot
 } from 'cedar-os';
+import { Mail, Send, Wand2 } from "lucide-react";
+import { useSpell, ActivationMode, Hotkey } from 'cedar-os';
+import { useRegisterState, useRegisterFrontendTool, useSubscribeStateToAgentContext } from 'cedar-os';
 import { z } from 'zod';
 import type { ProviderConfig } from 'cedar-os';
 
-// Magic Wand Icon for the spell
-const MagicWandIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.998 15.998 0 011.622-3.385m5.043.025a15.998 15.998 0 001.622-3.385m3.388 1.62a15.998 15.998 0 00-1.622 3.385m-5.043-.025a15.998 15.998 0 01-3.388-1.621m5.043.025a15.998 15.998 0 013.388 1.622m0-11.218a4.5 4.5 0 11-8.4 2.245 4.5 4.5 0 018.4-2.245z" />
-  </svg>
-);
+
+
+interface EmailPriority {
+  emailId: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  reasoning: string;
+}
 
 // --- Note Modal Component ---
 const NoteModal = ({ isOpen, onClose, onSave, initialContent, patientName }: { 
@@ -72,7 +76,9 @@ interface Patient {
   name: string;
   mrn: string;
   email: string;
-  body : string;
+  body: string;
+  priority?: EmailPriority;
+  created_at?: string; // Supabase timestamp
 }
 
 interface AgentStatus {
@@ -163,6 +169,8 @@ const EmailPortal: React.FC = () => {
         alert(`Error saving note: ${e.message}`);
     }
   };
+  const [emailPriorities, setEmailPriorities] = useState<EmailPriority[]>([]);
+  const [sortByDate, setSortByDate] = useState(false);
 
   // Register email draft as Cedar state - this makes it available to AI agents
   useRegisterState({
@@ -274,6 +282,27 @@ const EmailPortal: React.FC = () => {
   };
 
   const prioritizeEmail = async () => {
+    const getEmailPriority = (text: string, subject: string) => {
+      // Keywords indicating high priority
+      const urgentKeywords = ['URGENT', 'IMMEDIATE', 'CRITICAL', 'EMERGENCY', 'ABNORMAL', 'ELEVATED'];
+      const mediumKeywords = ['REVIEW', 'FOLLOW-UP', 'RESULTS', 'AVAILABLE', 'DUE'];
+      
+      // Check subject and body for urgent keywords
+      const textUpper = (text + ' ' + subject).toUpperCase();
+      const hasUrgentKeywords = urgentKeywords.some(keyword => textUpper.includes(keyword));
+      const hasMediumKeywords = mediumKeywords.some(keyword => textUpper.includes(keyword));
+      
+      // Check for clinical values that might indicate urgency
+      const hasCriticalValues = textUpper.includes('CRITICAL') && textUpper.includes('REFERENCE');
+      const hasDeadline = /DUE|BY|DEADLINE|EXPIRES?/i.test(text);
+      
+      if (hasUrgentKeywords || hasCriticalValues) {
+        return 'HIGH';
+      } else if (hasMediumKeywords || hasDeadline) {
+        return 'MEDIUM';
+      }
+      return 'LOW';
+    };
 
     try {
       const response = await fetch(`http://localhost:4001/api/patient/${selectedPatientId}/prioritize-email`, {
@@ -281,7 +310,9 @@ const EmailPortal: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           patientId: selectedPatientId,
-          text: selectedEmail?.body || '',
+          text: selectedEmail ? selectedEmail.body : '',
+          subject: selectedEmail ? selectedEmail.email : '',
+          suggestedPriority: selectedEmail ? getEmailPriority(selectedEmail.body, selectedEmail.email) : 'LOW'
         }),
       });
   
@@ -291,8 +322,19 @@ const EmailPortal: React.FC = () => {
   
       if (!result.success) throw new Error(result.error || 'Unknown error from agent');
   
-      // result.data contains { priority: 'High' | 'Medium' | 'Low', reasoning: string }
-      return result.data;
+      // Update email priorities state with the new priority
+      const newPriority: EmailPriority = {
+        emailId: selectedPatientId,
+        priority: getEmailPriority(selectedEmail?.body || '', selectedEmail?.email || ''),
+        reasoning: result.data.reasoning || 'Priority based on content analysis'
+      };
+      
+      setEmailPriorities(prev => {
+        const filtered = prev.filter(p => p.emailId !== selectedPatientId);
+        return [...filtered, newPriority];
+      });
+      
+      return newPriority;
   
     } catch (error: any) {
       setAiError(error.message);
@@ -362,10 +404,124 @@ Michael Brown`
     }
   ];
 
-  // Check Mastra agent status on component mount
+  // Fetch emails from Supabase through our backend
+  const fetchEmails = async () => {
+    try {
+      console.log('Fetching emails from backend...');
+      const response = await fetch('http://localhost:4001/api/emails');
+      if (!response.ok) throw new Error('Failed to fetch emails');
+      const data = await response.json();
+      if (data.success && data.emails) {
+        // Update mock patients with backend data
+        const updatedPatients = mockPatients.map(patient => {
+          const backendEmail = data.emails.find((e: any) => e.id === patient.id);
+          if (backendEmail) {
+            return {
+              ...patient,
+              created_at: backendEmail.created_at,
+              priority: backendEmail.priority
+            };
+          }
+          return patient;
+        });
+        console.log('Updated patients with timestamps:', updatedPatients);
+        // Update email priorities based on backend data
+        const priorities = data.emails.map((email: any) => ({
+          emailId: email.id,
+          priority: email.priority || 'LOW',
+          reasoning: 'Priority based on content analysis'
+        }));
+        setEmailPriorities(priorities);
+      }
+    } catch (error) {
+      console.error('Failed to fetch email data:', error);
+    }
+  };
+
+  // Initialize emails and check agent status on mount
   useEffect(() => {
-    checkAgentStatus();
+    const initializeEmails = async () => {
+      await Promise.all([
+        checkAgentStatus(),
+        fetchEmails()
+      ]);
+      // Initial priority calculation
+      const priorities: EmailPriority[] = mockPatients.map(patient => ({
+        emailId: patient.id,
+        priority: patient.email.toUpperCase().includes('URGENT') || 
+                 patient.email.toUpperCase().includes('IMMEDIATE') || 
+                 patient.body.toUpperCase().includes('CRITICAL') ? 'HIGH' :
+                 patient.email.toUpperCase().includes('RESULTS') || 
+                 patient.email.toUpperCase().includes('DUE') ? 'MEDIUM' : 'LOW',
+        reasoning: 'Priority based on content analysis'
+      }));
+      console.log('Initial priorities:', priorities);
+      setEmailPriorities(priorities);
+      // Then call the API
+      prioritizeAllEmails();
+    };
+    initializeEmails();
   }, []);
+
+  const prioritizeAllEmails = async () => {
+    const getEmailPriority = (text: string, subject: string) => {
+      // Keywords indicating high priority
+      const urgentKeywords = ['URGENT', 'IMMEDIATE', 'CRITICAL', 'EMERGENCY', 'ABNORMAL', 'ELEVATED'];
+      const mediumKeywords = ['REVIEW', 'FOLLOW-UP', 'RESULTS', 'AVAILABLE', 'DUE'];
+      
+      // Check subject and body for urgent keywords
+      const textUpper = (text + ' ' + subject).toUpperCase();
+      const hasUrgentKeywords = urgentKeywords.some(keyword => textUpper.includes(keyword));
+      const hasMediumKeywords = mediumKeywords.some(keyword => textUpper.includes(keyword));
+      
+      // Check for clinical values that might indicate urgency
+      const hasCriticalValues = textUpper.includes('CRITICAL') && textUpper.includes('REFERENCE');
+      const hasDeadline = /DUE|BY|DEADLINE|EXPIRES?/i.test(text);
+      
+      if (hasUrgentKeywords || hasCriticalValues) {
+        return 'HIGH';
+      } else if (hasMediumKeywords || hasDeadline) {
+        return 'MEDIUM';
+      }
+      return 'LOW';
+    };
+
+    try {
+      const response = await fetch('http://localhost:4001/api/prioritize-emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emails: mockPatients.map(patient => ({
+            id: patient.id,
+            patientId: patient.id,
+            text: patient.body,
+            subject: patient.email,
+            suggestedPriority: getEmailPriority(patient.body, patient.email)
+          }))
+        })
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        // Convert the priorities to match our interface
+        const priorities: EmailPriority[] = mockPatients.map(patient => {
+          const priority = getEmailPriority(patient.body, patient.email);
+          console.log(`Setting priority for ${patient.name}:`, priority);
+          return {
+            emailId: patient.id,
+            priority,
+            reasoning: result.data.find((r: any) => r.emailId === patient.id)?.reasoning || 'Priority based on content analysis'
+          };
+        });
+        console.log('Setting email priorities:', priorities);
+        setEmailPriorities(priorities);
+      }
+    } catch (error) {
+      console.error('Failed to prioritize emails:', error);
+    }
+  };
 
   const checkAgentStatus = async () => {
     try {
@@ -412,16 +568,14 @@ Michael Brown`
     }
   };
 
-  const handleMastraAgentClick = () => {
-    if (!selectedPatientId) {
-      alert('Please select a patient first!');
+    const handleMastraAgentClick = () => {
+    if (!selectedEmail) {
+      alert('Please select a patient email first!');
       return;
     }
     
-    fetchPatientSummaryWithMastra(selectedPatientId);
-  };
-
-  const selectedPatient = mockPatients.find(p => p.id === selectedPatientId);
+    fetchPatientSummaryWithMastra(selectedEmail.id);
+  };  const selectedPatient = mockPatients.find(p => p.id === selectedPatientId);
 
 
 
@@ -436,6 +590,15 @@ Michael Brown`
       />
       <div className="flex h-screen bg-gray-100">
       {/* Sidebar */}
+      {selectedEmail && (
+        <CommandPaletteSpell 
+          selectedPatientId={selectedEmail.id}
+          onFetchSummary={fetchPatientSummaryWithMastra}
+          isPatientSummaryOpen={!!patientSummary}
+        />
+      )}
+      <div className="flex h-screen bg-gray-100">
+        {/* Sidebar */}
       <div className="w-64 bg-white shadow-md p-4 flex flex-col">
         <h2 className="text-2xl font-bold mb-6">📧 Mail</h2>
         <button
@@ -468,9 +631,47 @@ Michael Brown`
         {/* Email List */}
         {!selectedEmail && (
           <div className="p-6 overflow-y-auto">
-            <h2 className="text-xl font-semibold mb-4 capitalize">{selectedTab}</h2>
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h2 className="text-xl font-semibold capitalize">{selectedTab}</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  {sortByDate ? 'Sorted by most recent' : 'Sorted by priority'}
+                </p>
+              </div>
+              <button
+                onClick={() => setSortByDate(!sortByDate)}
+                className="px-3 py-1 text-sm bg-white border rounded-md hover:bg-gray-50 flex items-center gap-2"
+              >
+                {sortByDate ? (
+                  <>
+                    <span>📅 Sort by Date</span>
+                    <span className="text-xs text-gray-500">(newest first)</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🚨 Sort by Priority</span>
+                    <span className="text-xs text-gray-500">(high to low)</span>
+                  </>
+                )}
+              </button>
+            </div>
             <div className="space-y-2">
-              {mockPatients.map(patient => (
+              {mockPatients
+                .map(patient => {
+                  const priority = emailPriorities.find(p => p.emailId === patient.id);
+                  console.log(`Rendering ${patient.name} with priority:`, priority);
+                  return {
+                    ...patient,
+                    priority
+                  };
+                })
+                .sort((a, b) => {
+                  const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+                  const priorityA = a.priority?.priority || 'LOW';
+                  const priorityB = b.priority?.priority || 'LOW';
+                  return priorityOrder[priorityA] - priorityOrder[priorityB];
+                })
+                .map(patient => (
                 <div
                   key={patient.id}
                   onClick={() => {
@@ -481,11 +682,33 @@ Michael Brown`
                   className="bg-white border rounded-md p-4 cursor-pointer hover:bg-gray-50 flex items-center gap-3"
                 >
                   {/* Priority dot placeholder (could be added dynamically from patientSummary later) */}
-                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                  <span 
+                    className={`w-3 h-3 rounded-full ${
+                      !patient.priority ? 'bg-gray-300' :
+                      patient.priority.priority === 'HIGH' ? 'bg-red-500' :
+                      patient.priority.priority === 'MEDIUM' ? 'bg-yellow-500' :
+                      patient.priority.priority === 'LOW' ? 'bg-green-500' :
+                      'bg-gray-300'
+                    }`}
+                    title={patient.priority?.reasoning || 'Priority: ' + (patient.priority?.priority || 'Not set')}
+                  ></span>
 
                   <div className="flex-1">
                     <h3 className="font-semibold text-gray-800">{patient.email}</h3>
-                    <p className="text-sm text-gray-600">Patient: {patient.name} ({patient.mrn})</p>
+                    <div className="flex justify-between items-center mt-1">
+                      <p className="text-sm text-gray-600">Patient: {patient.name} ({patient.mrn})</p>
+                      <p className="text-xs text-gray-500">
+                        {patient.created_at
+                          ? new Date(patient.created_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: 'numeric',
+                              hour12: true
+                            })
+                          : 'Time not available'}
+                      </p>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -497,7 +720,10 @@ Michael Brown`
         {selectedEmail && (
           <div className="flex-1 p-6 overflow-y-auto">
             <button
-              onClick={() => setSelectedEmail(null)}
+              onClick={() => {
+                setSelectedEmail(null);
+                setSelectedPatientId('');
+              }}
               className="mb-4 text-blue-600 hover:underline text-sm"
             >
               ← Back to {selectedTab}
@@ -583,7 +809,7 @@ Michael Brown`
                   className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Use CARE to generate contextual healthcare email reply"
                 >
-                  <MagicWandIcon />
+                  <Wand2 size={16} />
                   {draftReply ? '✨ Continue with CARE' : '✨ Generate with CARE'}
                 </button>
               </div>
@@ -595,16 +821,6 @@ Michael Brown`
                 <button className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
                   ➡️ Forward
                 </button>
-              </div>
-
-              <div className="flex gap-2">
-                <button 
-                  onClick={prioritizeEmail}
-                  disabled={isAiLoading || !selectedEmail}
-                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                  Find Priority
-                </button>
-                
               </div>
 
             </div>
@@ -635,3 +851,258 @@ export default function EmailAppWrapper() {
     </CedarCopilot>
   );
 }
+interface CommandPaletteSpellProps {
+  selectedPatientId?: string;
+  onFetchSummary: (patientId: string) => void;
+  isPatientSummaryOpen: boolean;
+}
+
+function CommandPaletteSpell({ selectedPatientId, onFetchSummary, isPatientSummaryOpen }: CommandPaletteSpellProps) {
+  const [loading, setLoading] = useState(false);
+  const [patientSummary, setPatientSummary] = useState<PatientSummary | null>(null);
+  const [mode, setMode] = useState<'summary' | 'generate'>('summary');
+  const [query, setQuery] = useState('');
+
+    const { isActive, deactivate } = useSpell({
+    id: 'command-palette',
+    activationConditions: {
+      events: ['cmd+k'],
+      mode: ActivationMode.TOGGLE,
+    },
+    onActivate: async () => {
+      if (isPatientSummaryOpen) {
+        setMode('generate');
+      } else if (selectedPatientId) {
+        setMode('summary');
+        setLoading(true);
+        try {
+          const response = await fetch(`http://localhost:4001/api/patient/${selectedPatientId}/summary`);
+          const result = await response.json();
+          if (result.success) {
+            setPatientSummary(result);
+          } else {
+            alert(`Error: ${result.error}`);
+          }
+        } catch (error: any) {
+          alert(`Network error: ${error.message}`);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        setMode('generate');
+      }
+    },
+    preventDefaultEvents: true,
+  });
+
+  if (!isActive) return null;
+
+	return (
+		<div className='fixed inset-y-0 right-0 z-50 flex bg-black/20'>
+			<div className='w-[500px] h-full overflow-y-auto bg-white shadow-xl border-l border-gray-200'>
+				<div className='sticky top-0 bg-white border-b z-10'>
+					<div className='flex justify-between items-center px-6 py-4'>
+						<div className='flex items-center gap-2'>
+							<h2 className='text-lg font-semibold'>
+								{mode === 'summary' ? '📊 Patient Summary' : '✨ Generate with Care'}
+							</h2>
+						</div>
+						<div className='flex items-center gap-2'>
+							{isPatientSummaryOpen && (
+								<button
+									onClick={() => setMode(mode === 'summary' ? 'generate' : 'summary')}
+									className='p-2 hover:bg-gray-100 rounded-full text-gray-500'
+									title={mode === 'summary' ? 'Switch to Generate' : 'View Patient Summary'}
+								>
+									{mode === 'summary' ? <Wand2 size={16} /> : '📊'}
+								</button>
+							)}
+							<button 
+								onClick={deactivate}
+								className='p-2 hover:bg-gray-100 rounded-full'
+							>
+								<span className='text-gray-500'>×</span>
+							</button>
+						</div>
+					</div>
+					<div className='px-6 pb-4 text-sm text-gray-500 flex items-center gap-2'>
+						<span className='w-2 h-2 rounded-full bg-green-500 animate-pulse'></span>
+						{mode === 'summary' ? 'Auto-generated Report' : 'AI-powered Assistant'}
+					</div>
+				</div>
+
+				{loading ? (
+					<div className='flex items-center justify-center py-8'>
+						<div className='animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500'></div>
+					</div>
+				) : patientSummary ? (
+					<div className='p-6 space-y-6'>
+						{/* Patient Header */}
+						<div className='flex justify-between items-start'>
+							<div>
+								<div className='flex items-center gap-2'>
+									<h3 className='text-xl font-bold'>👤 {patientSummary.data.patient.name}</h3>
+								</div>
+								<p className='text-gray-600 text-sm'>MRN: {patientSummary.data.patient.mrn}</p>
+							</div>
+							<div>
+								<div className='text-right mb-1'>
+									<span className='text-gray-600 mr-2'>Health Score:</span>
+									<span className={`font-bold ${
+										parseInt(patientSummary.data.stats.healthScore.toString()) >= 70 ? 'text-green-600' : 'text-red-600'
+									}`}>{patientSummary.data.stats.healthScore}/100</span>
+								</div>
+								<div className='flex items-center justify-end gap-2'>
+									<span className='text-gray-600'>Risk Level:</span>
+									<span className={`px-2 py-0.5 text-xs font-bold rounded ${
+										patientSummary.data.stats.riskLevel === 'HIGH' ? 'bg-red-100 text-red-700' :
+										'bg-yellow-100 text-yellow-700'
+									}`}>{patientSummary.data.stats.riskLevel}</span>
+								</div>
+								<div className='text-right mt-1 text-sm text-gray-500'>
+									DOB: {patientSummary.data.patient.dateOfBirth}
+								</div>
+							</div>
+						</div>
+
+						{/* Stats Grid */}
+							<div className='grid grid-cols-4 gap-3'>
+								<div className='bg-gray-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-gray-700'>{patientSummary.data.stats.totalLabs}</div>
+									<div className='text-xs text-gray-500'>Recent Labs</div>
+								</div>
+								<div className='bg-red-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-red-600'>{patientSummary.data.stats.abnormalLabs}</div>
+									<div className='text-xs text-red-500'>Abnormal</div>
+								</div>
+								<div className='bg-green-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-green-600'>{patientSummary.data.stats.activeMedications}</div>
+									<div className='text-xs text-green-500'>Medications</div>
+								</div>
+								<div className='bg-yellow-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-yellow-600'>{patientSummary.data.stats.recentEmails}</div>
+									<div className='text-xs text-yellow-500'>Recent Emails</div>
+								</div>
+							</div>						{/* Alerts */}
+						{patientSummary.data.alerts && patientSummary.data.alerts.length > 0 && (
+							<div className='bg-red-50 rounded-lg overflow-hidden'>
+								<div className='bg-red-100 px-4 py-2'>
+									<h3 className='text-red-700 font-semibold'>⚠️ Clinical Alerts:</h3>
+								</div>
+								<div className='p-4 space-y-3'>
+									{patientSummary.data.alerts.map((alert: any, index: number) => (
+										<div key={index} className='bg-white rounded-lg p-3 border border-red-100'>
+											<div className='flex justify-between items-start'>
+												<span className='font-medium flex-1'>{alert.message}</span>
+												<div className='flex gap-2 ml-4'>
+													<span className={`px-2 py-0.5 text-xs font-bold rounded ${
+														alert.severity === 'HIGH' ? 'bg-red-100 text-red-700' :
+														alert.severity === 'MEDIUM' ? 'bg-yellow-100 text-yellow-700' :
+														'bg-blue-100 text-blue-700'
+													}`}>{alert.severity}</span>
+													{alert.action_required && (
+														<span className='px-2 py-0.5 text-xs font-bold rounded bg-orange-100 text-orange-700'>
+															ACTION REQUIRED
+														</span>
+													)}
+												</div>
+											</div>
+											<div className='mt-1 text-xs text-gray-500'>
+												Category: {alert.category} {alert.priority && `| ${alert.priority}`}
+											</div>
+										</div>
+									))}
+								</div>
+							</div>
+						)}
+
+						{/* Labs */}
+						<div>
+							<h3 className='font-semibold mb-3'>🧪 Recent Lab Results:</h3>
+							<div className='space-y-2'>
+								{patientSummary.data.recentLabs.map((lab: any, index: number) => (
+									<div 
+										key={index} 
+										className={`p-3 rounded-lg ${lab.is_abnormal ? 'bg-red-50' : 'bg-gray-50'}`}
+									>
+										<div className='flex justify-between items-start'>
+											<div>
+												<div className='font-medium'>
+													{lab.test_name}
+													<span className='text-sm text-gray-500 ml-2'>({lab.lab_date})</span>
+												</div>
+												{lab.ai_interpretation && (
+													<div className='text-xs text-blue-600 mt-1'>
+														ℹ️ Analysis: {lab.ai_interpretation}
+													</div>
+												)}
+											</div>
+											<div className='text-right'>
+												<span className={`font-bold ${lab.is_abnormal ? 'text-red-600' : 'text-gray-700'}`}>
+													{lab.value} {lab.unit}
+												</span>
+												{lab.is_abnormal && (
+													<span className='ml-2 px-2 py-0.5 text-xs font-bold rounded bg-red-100 text-red-700'>
+														{lab.abnormal_type?.toUpperCase()}
+													</span>
+												)}
+											</div>
+										</div>
+									</div>
+								))}
+								{patientSummary.data.recentLabs.length === 0 && (
+									<div className='text-center text-gray-500 py-4'>
+										No recent lab results available
+									</div>
+								)}
+							</div>
+						</div>
+
+						{/* Medications */}
+						<div>
+							<h3 className='font-semibold mb-3'>💊 Active Medications:</h3>
+							<div className='space-y-2'>
+								{patientSummary.data.medications.map((med: any, index: number) => (
+									<div key={index} className='p-3 rounded-lg bg-green-50'>
+										<div className='flex justify-between items-start'>
+											<div>
+												<span className='font-medium'>{med.medication_name}</span>
+												{med.warning && (
+													<div className='text-xs text-yellow-600 mt-1'>
+														⚠️ {med.warning}
+													</div>
+												)}
+											</div>
+											<div className='text-sm text-gray-600'>
+												{med.dosage} - {med.frequency}
+											</div>
+										</div>
+									</div>
+								))}
+								{patientSummary.data.medications.length === 0 && (
+									<div className='text-center text-gray-500 py-4'>
+										No active medications
+									</div>
+								)}
+							</div>
+						</div>
+					</div>
+				) : (
+					<div className='p-6 text-center'>
+						<div className='text-gray-400'>
+							<svg className='w-12 h-12 mx-auto mb-4' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+								<path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' />
+							</svg>
+							<p className='text-sm'>Select a patient and press</p>
+							<kbd className='mt-2 inline-block px-2 py-1 text-sm font-semibold text-gray-800 bg-gray-100 border border-gray-200 rounded'>⌘K</kbd>
+							<p className='mt-2 text-sm'>to view their summary</p>
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+// Export the component directly - Cedar is already configured at root level
+export default EmailPortal;

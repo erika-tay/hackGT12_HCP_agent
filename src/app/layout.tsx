@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 import { CedarCopilot, ProviderConfig } from 'cedar-os';
 import { messageRenderers } from '@/cedar/messageRenderers';
+import { useSpell, ActivationMode } from 'cedar-os';
+import { useState } from 'react';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
