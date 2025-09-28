@@ -15,6 +15,9 @@ const MagicWandIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.998 15.998 0 011.622-3.385m5.043.025a15.998 15.998 0 001.622-3.385m3.388 1.62a15.998 15.998 0 00-1.622 3.385m-5.043-.025a15.998 15.998 0 01-3.388-1.621m5.043.025a15.998 15.998 0 013.388 1.622m0-11.218a4.5 4.5 0 11-8.4 2.245 4.5 4.5 0 018.4-2.245z" />
   </svg>
 );
+import { useSpell, ActivationMode, Hotkey } from 'cedar-os';
+
+
 
 interface Patient {
   id: string;
@@ -198,7 +201,7 @@ const EmailPortal: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           patientId: selectedPatientId,
-          text: selectedEmail.body,
+          text: selectedEmail ? selectedEmail.body : '',
         }),
       });
   
@@ -329,22 +332,27 @@ Michael Brown`
     }
   };
 
-  const handleMastraAgentClick = () => {
-    if (!selectedPatientId) {
-      alert('Please select a patient first!');
+    const handleMastraAgentClick = () => {
+    if (!selectedEmail) {
+      alert('Please select a patient email first!');
       return;
     }
     
-    fetchPatientSummaryWithMastra(selectedPatientId);
-  };
-
-  const selectedPatient = mockPatients.find(p => p.id === selectedPatientId);
+    fetchPatientSummaryWithMastra(selectedEmail.id);
+  };  const selectedPatient = mockPatients.find(p => p.id === selectedPatientId);
 
 
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* Sidebar */}
+    <>
+      {selectedEmail && (
+        <LabSpell 
+          selectedPatientId={selectedEmail.id}
+          onFetchSummary={fetchPatientSummaryWithMastra}
+        />
+      )}
+      <div className="flex h-screen bg-gray-100">
+        {/* Sidebar */}
       <div className="w-64 bg-white shadow-md p-4 flex flex-col">
         <h2 className="text-2xl font-bold mb-6">📧 Mail</h2>
         <button
@@ -406,7 +414,10 @@ Michael Brown`
         {selectedEmail && (
           <div className="flex-1 p-6 overflow-y-auto">
             <button
-              onClick={() => setSelectedEmail(null)}
+              onClick={() => {
+                setSelectedEmail(null);
+                setSelectedPatientId('');
+              }}
               className="mb-4 text-blue-600 hover:underline text-sm"
             >
               ← Back to {selectedTab}
@@ -479,8 +490,244 @@ Michael Brown`
         )}
       </div>
     </div>
+    </>
   );
 };
+
+interface LabSpellProps {
+  selectedPatientId: string;
+  onFetchSummary: (patientId: string) => void;
+}
+
+function LabSpell({ selectedPatientId, onFetchSummary }: LabSpellProps) {
+  const [loading, setLoading] = useState(false);
+  const [patientSummary, setPatientSummary] = useState<PatientSummary | null>(null);
+  const [query, setQuery] = useState('');
+
+  const { isActive, deactivate } = useSpell({
+    id: 'lab-spell',
+    activationConditions: {
+      events: ['cmd+k'],
+      mode: ActivationMode.TOGGLE,
+    },
+    onActivate: async () => {
+      if (selectedPatientId) {
+        setLoading(true);
+        try {
+          const response = await fetch(`http://localhost:4001/api/patient/${selectedPatientId}/summary`);
+          const result = await response.json();
+          if (result.success) {
+            setPatientSummary(result);
+          } else {
+            alert(`Mastra Agent Error: ${result.error}`);
+          }
+        } catch (error: any) {
+          alert(`Network error: ${error.message}`);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        alert('Please select a patient first!');
+      }
+    },
+    preventDefaultEvents: true,
+  });
+
+  if (!isActive) return null;
+
+	return (
+		<div className='fixed inset-y-0 right-0 z-50 flex bg-black/20'>
+			<div className='w-[500px] h-full overflow-y-auto bg-white shadow-xl border-l border-gray-200'>
+				<div className='sticky top-0 bg-white border-b z-10'>
+					<div className='flex justify-between items-center px-6 py-4'>
+						<div className='flex items-center gap-2'>
+							<h2 className='text-lg font-semibold'>📊 Patient Summary</h2>
+						</div>
+						<button 
+							onClick={deactivate}
+							className='p-2 hover:bg-gray-100 rounded-full'
+						>
+							<span className='text-gray-500'>×</span>
+						</button>
+					</div>
+					<div className='px-6 pb-4 text-sm text-gray-500 flex items-center gap-2'>
+						<span className='w-2 h-2 rounded-full bg-green-500 animate-pulse'></span>
+						Auto-generated Report
+					</div>
+				</div>
+
+				{loading ? (
+					<div className='flex items-center justify-center py-8'>
+						<div className='animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500'></div>
+					</div>
+				) : patientSummary ? (
+					<div className='p-6 space-y-6'>
+						{/* Patient Header */}
+						<div className='flex justify-between items-start'>
+							<div>
+								<div className='flex items-center gap-2'>
+									<h3 className='text-xl font-bold'>👤 {patientSummary.data.patient.name}</h3>
+								</div>
+								<p className='text-gray-600 text-sm'>MRN: {patientSummary.data.patient.mrn}</p>
+							</div>
+							<div>
+								<div className='text-right mb-1'>
+									<span className='text-gray-600 mr-2'>Health Score:</span>
+									<span className={`font-bold ${
+										parseInt(patientSummary.data.stats.healthScore.toString()) >= 70 ? 'text-green-600' : 'text-red-600'
+									}`}>{patientSummary.data.stats.healthScore}/100</span>
+								</div>
+								<div className='flex items-center justify-end gap-2'>
+									<span className='text-gray-600'>Risk Level:</span>
+									<span className={`px-2 py-0.5 text-xs font-bold rounded ${
+										patientSummary.data.stats.riskLevel === 'HIGH' ? 'bg-red-100 text-red-700' :
+										'bg-yellow-100 text-yellow-700'
+									}`}>{patientSummary.data.stats.riskLevel}</span>
+								</div>
+								<div className='text-right mt-1 text-sm text-gray-500'>
+									DOB: {patientSummary.data.patient.dateOfBirth}
+								</div>
+							</div>
+						</div>
+
+						{/* Stats Grid */}
+							<div className='grid grid-cols-4 gap-3'>
+								<div className='bg-gray-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-gray-700'>{patientSummary.data.stats.totalLabs}</div>
+									<div className='text-xs text-gray-500'>Recent Labs</div>
+								</div>
+								<div className='bg-red-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-red-600'>{patientSummary.data.stats.abnormalLabs}</div>
+									<div className='text-xs text-red-500'>Abnormal</div>
+								</div>
+								<div className='bg-green-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-green-600'>{patientSummary.data.stats.activeMedications}</div>
+									<div className='text-xs text-green-500'>Medications</div>
+								</div>
+								<div className='bg-yellow-50 rounded-lg p-3 text-center'>
+									<div className='text-2xl font-bold text-yellow-600'>{patientSummary.data.stats.recentEmails}</div>
+									<div className='text-xs text-yellow-500'>Recent Emails</div>
+								</div>
+							</div>						{/* Alerts */}
+						{patientSummary.data.alerts && patientSummary.data.alerts.length > 0 && (
+							<div className='bg-red-50 rounded-lg overflow-hidden'>
+								<div className='bg-red-100 px-4 py-2'>
+									<h3 className='text-red-700 font-semibold'>⚠️ Clinical Alerts:</h3>
+								</div>
+								<div className='p-4 space-y-3'>
+									{patientSummary.data.alerts.map((alert: any, index: number) => (
+										<div key={index} className='bg-white rounded-lg p-3 border border-red-100'>
+											<div className='flex justify-between items-start'>
+												<span className='font-medium flex-1'>{alert.message}</span>
+												<div className='flex gap-2 ml-4'>
+													<span className={`px-2 py-0.5 text-xs font-bold rounded ${
+														alert.severity === 'HIGH' ? 'bg-red-100 text-red-700' :
+														alert.severity === 'MEDIUM' ? 'bg-yellow-100 text-yellow-700' :
+														'bg-blue-100 text-blue-700'
+													}`}>{alert.severity}</span>
+													{alert.action_required && (
+														<span className='px-2 py-0.5 text-xs font-bold rounded bg-orange-100 text-orange-700'>
+															ACTION REQUIRED
+														</span>
+													)}
+												</div>
+											</div>
+											<div className='mt-1 text-xs text-gray-500'>
+												Category: {alert.category} {alert.priority && `| ${alert.priority}`}
+											</div>
+										</div>
+									))}
+								</div>
+							</div>
+						)}
+
+						{/* Labs */}
+						<div>
+							<h3 className='font-semibold mb-3'>🧪 Recent Lab Results:</h3>
+							<div className='space-y-2'>
+								{patientSummary.data.recentLabs.map((lab: any, index: number) => (
+									<div 
+										key={index} 
+										className={`p-3 rounded-lg ${lab.is_abnormal ? 'bg-red-50' : 'bg-gray-50'}`}
+									>
+										<div className='flex justify-between items-start'>
+											<div>
+												<div className='font-medium'>
+													{lab.test_name}
+													<span className='text-sm text-gray-500 ml-2'>({lab.lab_date})</span>
+												</div>
+												{lab.ai_interpretation && (
+													<div className='text-xs text-blue-600 mt-1'>
+														ℹ️ Analysis: {lab.ai_interpretation}
+													</div>
+												)}
+											</div>
+											<div className='text-right'>
+												<span className={`font-bold ${lab.is_abnormal ? 'text-red-600' : 'text-gray-700'}`}>
+													{lab.value} {lab.unit}
+												</span>
+												{lab.is_abnormal && (
+													<span className='ml-2 px-2 py-0.5 text-xs font-bold rounded bg-red-100 text-red-700'>
+														{lab.abnormal_type?.toUpperCase()}
+													</span>
+												)}
+											</div>
+										</div>
+									</div>
+								))}
+								{patientSummary.data.recentLabs.length === 0 && (
+									<div className='text-center text-gray-500 py-4'>
+										No recent lab results available
+									</div>
+								)}
+							</div>
+						</div>
+
+						{/* Medications */}
+						<div>
+							<h3 className='font-semibold mb-3'>💊 Active Medications:</h3>
+							<div className='space-y-2'>
+								{patientSummary.data.medications.map((med: any, index: number) => (
+									<div key={index} className='p-3 rounded-lg bg-green-50'>
+										<div className='flex justify-between items-start'>
+											<div>
+												<span className='font-medium'>{med.medication_name}</span>
+												{med.warning && (
+													<div className='text-xs text-yellow-600 mt-1'>
+														⚠️ {med.warning}
+													</div>
+												)}
+											</div>
+											<div className='text-sm text-gray-600'>
+												{med.dosage} - {med.frequency}
+											</div>
+										</div>
+									</div>
+								))}
+								{patientSummary.data.medications.length === 0 && (
+									<div className='text-center text-gray-500 py-4'>
+										No active medications
+									</div>
+								)}
+							</div>
+						</div>
+					</div>
+				) : (
+					<div className='p-6 text-center'>
+						<div className='text-gray-400'>
+							<svg className='w-12 h-12 mx-auto mb-4' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+								<path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' />
+							</svg>
+							<p className='text-sm'>Select a patient and press</p>
+							<kbd className='mt-2 inline-block px-2 py-1 text-sm font-semibold text-gray-800 bg-gray-100 border border-gray-200 rounded'>⌘K</kbd>
+							<p className='mt-2 text-sm'>to view their summary</p>
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
 
 // Export the component directly - Cedar is already configured at root level
 export default EmailPortal;
