@@ -73,6 +73,78 @@ app.get('/api/patient/:patientId/summary', async (req, res) => {
 });
 
 // ===================
+// EMAIL PRIORITY ENDPOINT
+// ===================
+
+app.post('/api/patient/:patientId/prioritize-email', async (req, res) => {
+  console.log('req.params:', req.params);
+  console.log('req.body:', req.body);
+  
+  try {
+    const { patientId } = req.params;
+    const { text } = req.body;
+
+    if (!patientId || !text) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing patientId or text',
+        meta: {
+          processedBy: 'Mastra HealthcareAgent',
+          timestamp: new Date().toISOString(),
+          apiVersion: '1.0.0'
+        }
+      });
+    }
+
+    console.log(`📡 API: Received email prioritization request for patient ${patientId}`);
+    console.log(`🤖 API: Delegating to Mastra HealthcareAgent prioritizeEmails tool...`);
+
+    // Use Mastra agent tool execution
+    const result = await healthcareAgent.executeTool('prioritize-emails', { 
+      patientId, 
+      text
+    });
+
+    if (result.success) {
+      console.log(`✅ API: Email prioritized successfully`);
+      res.json({
+        success: true,
+        data: result.data, // e.g., { priority: 'High', reason: 'Critical lab results mentioned' }
+        meta: {
+          processedBy: 'Mastra HealthcareAgent',
+          timestamp: new Date().toISOString(),
+          apiVersion: '1.0.0'
+        }
+      });
+    } else {
+      console.log(`❌ API: Mastra agent failed to prioritize email - ${result.error}`);
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        meta: {
+          processedBy: 'Mastra HealthcareAgent',
+          timestamp: new Date().toISOString(),
+          apiVersion: '1.0.0'
+        }
+      });
+    }
+
+  } catch (error: any) {
+    console.error('❌ API: Unexpected server error during email prioritization:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message,
+      meta: {
+        processedBy: 'API Server',
+        timestamp: new Date().toISOString(),
+        apiVersion: '1.0.0'
+      }
+    });
+  }
+});
+
+// ===================
 // MASTRA AGENT STATUS ENDPOINT
 // ===================
 
@@ -135,62 +207,6 @@ app.post('/api/agent/execute-tool', async (req, res) => {
 });
 
 // ===================
-// EMAIL REPLY GENERATION ENDPOINT
-// ===================
-
-app.post('/api/emails/:patientId/draft-reply', async (req, res) => {
-  try {
-    const { patientId } = req.params;
-    const { originalEmail, currentDraft } = req.body;
-    
-    console.log(`📧 API: Generating email reply for patient ${patientId}`);
-    
-    // Use Mastra agent tool execution for email generation
-    const result = await healthcareAgent.executeTool('generate-email-reply', { 
-      patientId,
-      originalEmail,
-      currentDraft: currentDraft || ''
-    });
-    
-    if (result.success) {
-      console.log(`✅ API: Email reply generated successfully`);
-      
-      // Set up Server-Sent Events for streaming response
-      res.writeHead(200, {
-        'Content-Type': 'text/plain',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
-
-      // Stream the response
-      const replyText = result.reply;
-      const words = replyText.split(' ');
-      
-      for (let i = 0; i < words.length; i++) {
-        res.write(words[i] + ' ');
-        await new Promise(resolve => setTimeout(resolve, 50)); // Small delay for streaming effect
-      }
-      
-      res.end();
-    } else {
-      res.status(400).json({
-        success: false,
-        error: result.error || 'Failed to generate reply'
-      });
-    }
-    
-  } catch (error: any) {
-    console.error('❌ API: Email reply generation error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      details: error.message
-    });
-  }
-});
-
-// ===================
 // HEALTH CHECK ENDPOINT
 // ===================
 
@@ -216,7 +232,8 @@ app.get('/api/health', async (req, res) => {
         'GET /api/patient/:id/summary',
         'GET /api/agent/status', 
         'POST /api/agent/execute-tool',
-        'GET /api/health'
+        'GET /api/health',
+        'POST /api/patient/:id/prioritize-email'
       ]
     });
   } catch (error: any) {
