@@ -15,6 +15,24 @@ const healthcareAgent = new HealthcareAgent();
 console.log('🚀 Initializing Mastra Healthcare Agent API Server...');
 
 // ===================
+// Email Endpoints
+// ===================
+
+app.get('/api/emails', async (req, res) => {
+  try {
+    console.log('📧 API: Fetching emails with timestamps');
+    const result = await healthcareAgent.getEmails();
+    res.json(result);
+  } catch (error) {
+    console.error('Failed to fetch emails:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// ===================
 // MAIN ENDPOINT: Patient Summary via Mastra Agent
 // ===================
 

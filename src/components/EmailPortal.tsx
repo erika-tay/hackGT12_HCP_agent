@@ -8,12 +8,20 @@ import { z } from 'zod';
 
 
 
+interface EmailPriority {
+  emailId: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  reasoning: string;
+}
+
 interface Patient {
   id: string;
   name: string;
   mrn: string;
   email: string;
   body: string;
+  priority?: EmailPriority;
+  created_at?: string; // Supabase timestamp
 }
 
 interface AgentStatus {
@@ -72,6 +80,8 @@ const EmailPortal: React.FC = () => {
   const [draftReply, setDraftReply] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<Error | null>(null);
+  const [emailPriorities, setEmailPriorities] = useState<EmailPriority[]>([]);
+  const [sortByDate, setSortByDate] = useState(false);
 
   // Register email draft as Cedar state - this makes it available to AI agents
   useRegisterState({
@@ -183,6 +193,27 @@ const EmailPortal: React.FC = () => {
   };
 
   const prioritizeEmail = async () => {
+    const getEmailPriority = (text: string, subject: string) => {
+      // Keywords indicating high priority
+      const urgentKeywords = ['URGENT', 'IMMEDIATE', 'CRITICAL', 'EMERGENCY', 'ABNORMAL', 'ELEVATED'];
+      const mediumKeywords = ['REVIEW', 'FOLLOW-UP', 'RESULTS', 'AVAILABLE', 'DUE'];
+      
+      // Check subject and body for urgent keywords
+      const textUpper = (text + ' ' + subject).toUpperCase();
+      const hasUrgentKeywords = urgentKeywords.some(keyword => textUpper.includes(keyword));
+      const hasMediumKeywords = mediumKeywords.some(keyword => textUpper.includes(keyword));
+      
+      // Check for clinical values that might indicate urgency
+      const hasCriticalValues = textUpper.includes('CRITICAL') && textUpper.includes('REFERENCE');
+      const hasDeadline = /DUE|BY|DEADLINE|EXPIRES?/i.test(text);
+      
+      if (hasUrgentKeywords || hasCriticalValues) {
+        return 'HIGH';
+      } else if (hasMediumKeywords || hasDeadline) {
+        return 'MEDIUM';
+      }
+      return 'LOW';
+    };
 
     try {
       const response = await fetch(`http://localhost:4001/api/patient/${selectedPatientId}/prioritize-email`, {
@@ -191,6 +222,8 @@ const EmailPortal: React.FC = () => {
         body: JSON.stringify({
           patientId: selectedPatientId,
           text: selectedEmail ? selectedEmail.body : '',
+          subject: selectedEmail ? selectedEmail.email : '',
+          suggestedPriority: selectedEmail ? getEmailPriority(selectedEmail.body, selectedEmail.email) : 'LOW'
         }),
       });
   
@@ -200,8 +233,19 @@ const EmailPortal: React.FC = () => {
   
       if (!result.success) throw new Error(result.error || 'Unknown error from agent');
   
-      // result.data contains { priority: 'High' | 'Medium' | 'Low', reasoning: string }
-      return result.data;
+      // Update email priorities state with the new priority
+      const newPriority: EmailPriority = {
+        emailId: selectedPatientId,
+        priority: getEmailPriority(selectedEmail?.body || '', selectedEmail?.email || ''),
+        reasoning: result.data.reasoning || 'Priority based on content analysis'
+      };
+      
+      setEmailPriorities(prev => {
+        const filtered = prev.filter(p => p.emailId !== selectedPatientId);
+        return [...filtered, newPriority];
+      });
+      
+      return newPriority;
   
     } catch (error: any) {
       setAiError(error.message);
@@ -271,10 +315,124 @@ Michael Brown`
     }
   ];
 
-  // Check Mastra agent status on component mount
+  // Fetch emails from Supabase through our backend
+  const fetchEmails = async () => {
+    try {
+      console.log('Fetching emails from backend...');
+      const response = await fetch('http://localhost:4001/api/emails');
+      if (!response.ok) throw new Error('Failed to fetch emails');
+      const data = await response.json();
+      if (data.success && data.emails) {
+        // Update mock patients with backend data
+        const updatedPatients = mockPatients.map(patient => {
+          const backendEmail = data.emails.find((e: any) => e.id === patient.id);
+          if (backendEmail) {
+            return {
+              ...patient,
+              created_at: backendEmail.created_at,
+              priority: backendEmail.priority
+            };
+          }
+          return patient;
+        });
+        console.log('Updated patients with timestamps:', updatedPatients);
+        // Update email priorities based on backend data
+        const priorities = data.emails.map((email: any) => ({
+          emailId: email.id,
+          priority: email.priority || 'LOW',
+          reasoning: 'Priority based on content analysis'
+        }));
+        setEmailPriorities(priorities);
+      }
+    } catch (error) {
+      console.error('Failed to fetch email data:', error);
+    }
+  };
+
+  // Initialize emails and check agent status on mount
   useEffect(() => {
-    checkAgentStatus();
+    const initializeEmails = async () => {
+      await Promise.all([
+        checkAgentStatus(),
+        fetchEmails()
+      ]);
+      // Initial priority calculation
+      const priorities: EmailPriority[] = mockPatients.map(patient => ({
+        emailId: patient.id,
+        priority: patient.email.toUpperCase().includes('URGENT') || 
+                 patient.email.toUpperCase().includes('IMMEDIATE') || 
+                 patient.body.toUpperCase().includes('CRITICAL') ? 'HIGH' :
+                 patient.email.toUpperCase().includes('RESULTS') || 
+                 patient.email.toUpperCase().includes('DUE') ? 'MEDIUM' : 'LOW',
+        reasoning: 'Priority based on content analysis'
+      }));
+      console.log('Initial priorities:', priorities);
+      setEmailPriorities(priorities);
+      // Then call the API
+      prioritizeAllEmails();
+    };
+    initializeEmails();
   }, []);
+
+  const prioritizeAllEmails = async () => {
+    const getEmailPriority = (text: string, subject: string) => {
+      // Keywords indicating high priority
+      const urgentKeywords = ['URGENT', 'IMMEDIATE', 'CRITICAL', 'EMERGENCY', 'ABNORMAL', 'ELEVATED'];
+      const mediumKeywords = ['REVIEW', 'FOLLOW-UP', 'RESULTS', 'AVAILABLE', 'DUE'];
+      
+      // Check subject and body for urgent keywords
+      const textUpper = (text + ' ' + subject).toUpperCase();
+      const hasUrgentKeywords = urgentKeywords.some(keyword => textUpper.includes(keyword));
+      const hasMediumKeywords = mediumKeywords.some(keyword => textUpper.includes(keyword));
+      
+      // Check for clinical values that might indicate urgency
+      const hasCriticalValues = textUpper.includes('CRITICAL') && textUpper.includes('REFERENCE');
+      const hasDeadline = /DUE|BY|DEADLINE|EXPIRES?/i.test(text);
+      
+      if (hasUrgentKeywords || hasCriticalValues) {
+        return 'HIGH';
+      } else if (hasMediumKeywords || hasDeadline) {
+        return 'MEDIUM';
+      }
+      return 'LOW';
+    };
+
+    try {
+      const response = await fetch('http://localhost:4001/api/prioritize-emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emails: mockPatients.map(patient => ({
+            id: patient.id,
+            patientId: patient.id,
+            text: patient.body,
+            subject: patient.email,
+            suggestedPriority: getEmailPriority(patient.body, patient.email)
+          }))
+        })
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        // Convert the priorities to match our interface
+        const priorities: EmailPriority[] = mockPatients.map(patient => {
+          const priority = getEmailPriority(patient.body, patient.email);
+          console.log(`Setting priority for ${patient.name}:`, priority);
+          return {
+            emailId: patient.id,
+            priority,
+            reasoning: result.data.find((r: any) => r.emailId === patient.id)?.reasoning || 'Priority based on content analysis'
+          };
+        });
+        console.log('Setting email priorities:', priorities);
+        setEmailPriorities(priorities);
+      }
+    } catch (error) {
+      console.error('Failed to prioritize emails:', error);
+    }
+  };
 
   const checkAgentStatus = async () => {
     try {
@@ -375,9 +533,47 @@ Michael Brown`
         {/* Email List */}
         {!selectedEmail && (
           <div className="p-6 overflow-y-auto">
-            <h2 className="text-xl font-semibold mb-4 capitalize">{selectedTab}</h2>
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h2 className="text-xl font-semibold capitalize">{selectedTab}</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  {sortByDate ? 'Sorted by most recent' : 'Sorted by priority'}
+                </p>
+              </div>
+              <button
+                onClick={() => setSortByDate(!sortByDate)}
+                className="px-3 py-1 text-sm bg-white border rounded-md hover:bg-gray-50 flex items-center gap-2"
+              >
+                {sortByDate ? (
+                  <>
+                    <span>📅 Sort by Date</span>
+                    <span className="text-xs text-gray-500">(newest first)</span>
+                  </>
+                ) : (
+                  <>
+                    <span>🚨 Sort by Priority</span>
+                    <span className="text-xs text-gray-500">(high to low)</span>
+                  </>
+                )}
+              </button>
+            </div>
             <div className="space-y-2">
-              {mockPatients.map(patient => (
+              {mockPatients
+                .map(patient => {
+                  const priority = emailPriorities.find(p => p.emailId === patient.id);
+                  console.log(`Rendering ${patient.name} with priority:`, priority);
+                  return {
+                    ...patient,
+                    priority
+                  };
+                })
+                .sort((a, b) => {
+                  const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+                  const priorityA = a.priority?.priority || 'LOW';
+                  const priorityB = b.priority?.priority || 'LOW';
+                  return priorityOrder[priorityA] - priorityOrder[priorityB];
+                })
+                .map(patient => (
                 <div
                   key={patient.id}
                   onClick={() => {
@@ -388,11 +584,33 @@ Michael Brown`
                   className="bg-white border rounded-md p-4 cursor-pointer hover:bg-gray-50 flex items-center gap-3"
                 >
                   {/* Priority dot placeholder (could be added dynamically from patientSummary later) */}
-                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                  <span 
+                    className={`w-3 h-3 rounded-full ${
+                      !patient.priority ? 'bg-gray-300' :
+                      patient.priority.priority === 'HIGH' ? 'bg-red-500' :
+                      patient.priority.priority === 'MEDIUM' ? 'bg-yellow-500' :
+                      patient.priority.priority === 'LOW' ? 'bg-green-500' :
+                      'bg-gray-300'
+                    }`}
+                    title={patient.priority?.reasoning || 'Priority: ' + (patient.priority?.priority || 'Not set')}
+                  ></span>
 
                   <div className="flex-1">
                     <h3 className="font-semibold text-gray-800">{patient.email}</h3>
-                    <p className="text-sm text-gray-600">Patient: {patient.name} ({patient.mrn})</p>
+                    <div className="flex justify-between items-center mt-1">
+                      <p className="text-sm text-gray-600">Patient: {patient.name} ({patient.mrn})</p>
+                      <p className="text-xs text-gray-500">
+                        {patient.created_at
+                          ? new Date(patient.created_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: 'numeric',
+                              hour12: true
+                            })
+                          : 'Time not available'}
+                      </p>
+                    </div>
                   </div>
                 </div>
               ))}

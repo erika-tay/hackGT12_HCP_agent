@@ -17,7 +17,34 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Email interfaces
+interface EmailRecord {
+  id: string;
+  patient_id: string;
+  subject: string;
+  body: string;
+  created_at: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW' | null;
+  processed: boolean;
+}
+
+interface EmailResponse {
+  success: boolean;
+  emails?: EmailRecord[];
+  error?: string;
+}
+
 // Define tools
+const getEmailsTool = new Tool({
+  id: 'get-emails',
+  description: 'Get all emails with timestamps from Supabase',
+  parameters: z.object({}),
+  execute: async () => {
+    const agent = new HealthcareAgent();
+    return await agent.getEmails();
+  }
+});
+
 const getPatientSummaryTool = new Tool({
   id: 'get-patient-summary',
   description: 'Get comprehensive patient health summary',
@@ -106,14 +133,18 @@ const generateCedarEmailReplyTool = new Tool({
 });
 const prioritizeEmailsTool = new Tool({
   id: 'prioritize-emails',
-  description: 'Determine priority of email based on email text and patient data',
+  description: 'Determine priority levels for all emails in the inbox',
   parameters: z.object({
-    patientId: z.string().describe('Patient ID to get context for'),
-    text: z.string().describe('Email text to analyze')
+    emails: z.array(z.object({
+      id: z.string(),
+      patientId: z.string().describe('Patient ID associated with the email'),
+      text: z.string().describe('Email text to analyze'),
+      subject: z.string().describe('Email subject'),
+    })).describe('Array of emails to prioritize')
   }),
-  execute: async ({ patientId, text }) => {
+  execute: async ({ emails }) => {
     const agent = new HealthcareAgent();
-    return await agent.prioritizeEmail(patientId, text);
+    return await agent.prioritizeEmails(emails);
   }
 });
 
@@ -157,6 +188,78 @@ export class HealthcareAgent extends Agent {
         return await this.prioritizeEmail(params.patientId, params.text);
       default:
         throw new Error(`Unknown tool: ${toolName}`);
+    }
+  }
+
+  // Prioritize multiple emails
+  async prioritizeEmails(emails: Array<{ id: string; patientId: string; text: string; subject: string }>) {
+    try {
+      console.log(`📧 Prioritizing ${emails.length} emails...`);
+      
+      const priorityResults = await Promise.all(
+        emails.map(async (email) => {
+          // Get patient context
+          const patientSummary = await this.getPatientSummary(email.patientId);
+          
+          const prompt = `As a healthcare professional, evaluate the priority of this patient email.
+
+Subject: ${email.subject}
+
+Content: ${email.text}
+
+Patient Context:
+${patientSummary.success && patientSummary.data ? `
+- Health Score: ${patientSummary.data.stats.healthScore}/100
+- Risk Level: ${patientSummary.data.stats.riskLevel}
+- Recent Abnormal Labs: ${patientSummary.data.stats.abnormalLabs}
+- Critical Labs: ${patientSummary.data.stats.criticalLabs}
+` : 'Patient context unavailable'}
+
+Determine the priority level (HIGH/MEDIUM/LOW) and provide brief reasoning. Response format:
+{
+  "priority": "HIGH|MEDIUM|LOW",
+  "reasoning": "Brief explanation of priority level"
+}`;
+
+          const { generateText } = await import('ai');
+          const response = await generateText({
+            model: openai('gpt-4o-mini'),
+            prompt,
+            temperature: 0.3
+          });
+
+          let result;
+          try {
+            result = JSON.parse(response.text);
+          } catch {
+            result = {
+              priority: "MEDIUM",
+              reasoning: "Unable to determine priority - defaulting to medium"
+            };
+          }
+
+          return {
+            emailId: email.id,
+            ...result
+          };
+        })
+      );
+
+      return {
+        success: true,
+        data: priorityResults,
+        generatedAt: new Date().toISOString(),
+        agent: this.name
+      };
+
+    } catch (error: any) {
+      console.error("❌ Error prioritizing emails:", error);
+      return {
+        success: false,
+        error: error.message,
+        generatedAt: new Date().toISOString(),
+        agent: this.name
+      };
     }
   }
 
