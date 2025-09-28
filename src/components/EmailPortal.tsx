@@ -78,6 +78,8 @@ const EmailPortal: React.FC = () => {
   const [selectedTab, setSelectedTab] = useState<'inbox' | 'sent'>('inbox');
   const [selectedEmail, setSelectedEmail] = useState<Patient | null>(null);
   const [draftReply, setDraftReply] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<Error | null>(null);
 
   // Register email draft as Cedar state - this makes it available to AI agents
   useRegisterState({

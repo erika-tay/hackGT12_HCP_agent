@@ -103,6 +103,7 @@ const generateCedarEmailReplyTool = new Tool({
     const agent = new HealthcareAgent();
     return await agent.generateCedarAwareEmailReply(cedarContext);
   }
+});
 const prioritizeEmailsTool = new Tool({
   id: 'prioritize-emails',
   description: 'Determine priority of email based on email text and patient data',
