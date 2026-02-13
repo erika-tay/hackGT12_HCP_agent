@@ -1,10 +1,18 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { Mail, Send, FilePlus, Loader2 } from "lucide-react";
+import { 
+  useRegisterState, 
+  useRegisterFrontendTool,
+  useSubscribeStateToAgentContext,
+  CedarCopilot
+} from 'cedar-os';
 import { Mail, Send, Wand2 } from "lucide-react";
 import { useSpell, ActivationMode, Hotkey } from 'cedar-os';
 import { useRegisterState, useRegisterFrontendTool, useSubscribeStateToAgentContext } from 'cedar-os';
 import { z } from 'zod';
+import type { ProviderConfig } from 'cedar-os';
 
 
 
@@ -13,6 +21,55 @@ interface EmailPriority {
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   reasoning: string;
 }
+
+// --- Note Modal Component ---
+const NoteModal = ({ isOpen, onClose, onSave, initialContent, patientName }: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  onSave: (note: string) => void, 
+  initialContent: string, 
+  patientName: string 
+}) => {
+    const [noteContent, setNoteContent] = useState(initialContent);
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        setNoteContent(initialContent);
+    }, [initialContent]);
+
+    if (!isOpen) return null;
+
+    const handleSave = async () => {
+        setIsSaving(true);
+        await onSave(noteContent);
+        setIsSaving(false);
+    }
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-800">Add Note for {patientName}</h3>
+                <p className="text-sm text-gray-500 mb-4">Edit the AI-suggested note below and save it to the patient's chart.</p>
+                <textarea
+                    className="w-full h-32 p-2 border rounded-md text-sm focus:ring-2 focus:ring-blue-500"
+                    value={noteContent}
+                    onChange={(e) => setNoteContent(e.target.value)}
+                />
+                <div className="mt-4 flex justify-end space-x-2">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancel</button>
+                    <button 
+                        onClick={handleSave} 
+                        disabled={isSaving}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300 flex items-center"
+                    >
+                        {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        {isSaving ? 'Saving...' : 'Save Note'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 interface Patient {
   id: string;
@@ -80,6 +137,38 @@ const EmailPortal: React.FC = () => {
   const [draftReply, setDraftReply] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<Error | null>(null);
+  // Note modal states
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [suggestedNote, setSuggestedNote] = useState('');
+
+  // Note creation functionality - integrated with existing Cedar OS system
+
+  // Handle saving note to patient chart
+  const handleSaveNote = async (finalNote: string) => {
+    if (!selectedEmail) return;
+
+    try {
+        const response = await fetch('http://localhost:4001/api/notes/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                patientId: selectedEmail.id,
+                noteContent: finalNote,
+            }),
+        });
+        const result = await response.json();
+
+        if (!response.ok || !result.success) throw new Error(result.error || "Failed to save note.");
+
+        alert("Note saved successfully!");
+        setIsNoteModalOpen(false);
+        setSuggestedNote('');
+
+    } catch (e: any) {
+        setAiError(e);
+        alert(`Error saving note: ${e.message}`);
+    }
+  };
   const [emailPriorities, setEmailPriorities] = useState<EmailPriority[]>([]);
   const [sortByDate, setSortByDate] = useState(false);
 
@@ -492,6 +581,15 @@ Michael Brown`
 
   return (
     <>
+      <NoteModal
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        onSave={handleSaveNote}
+        initialContent={suggestedNote}
+        patientName={selectedEmail?.name || ''}
+      />
+      <div className="flex h-screen bg-gray-100">
+      {/* Sidebar */}
       {selectedEmail && (
         <CommandPaletteSpell 
           selectedPatientId={selectedEmail.id}
@@ -631,6 +729,11 @@ Michael Brown`
               ← Back to {selectedTab}
             </button>
 
+            {isAiLoading && (
+              <div className="absolute top-2 right-2 text-xs flex items-center gap-2 p-2 bg-blue-100 text-blue-700 rounded-md animate-pulse">
+                <Loader2 className="h-4 w-4 animate-spin"/>Processing...
+              </div>
+            )}
             <h2 className="text-2xl font-bold mb-2">{selectedEmail.email}</h2>
             <p className="text-sm text-gray-600 mb-4">
               Patient: {selectedEmail.name} | MRN: {selectedEmail.mrn}
@@ -639,6 +742,47 @@ Michael Brown`
               <div className="text-gray-700 text-sm whitespace-pre-wrap">
                 {selectedEmail.body}
               </div>
+            </div>
+            
+            <div className="flex items-center justify-between p-3 bg-yellow-100 border border-yellow-200 rounded-md mb-4">
+                <div className="text-xs text-gray-500">
+                    💡 Extract clinical information from this email
+                </div>
+                <button 
+                    onClick={async () => {
+                        if (!selectedEmail) {
+                            alert("Please select an email first to create a note.");
+                            return;
+                        }
+
+                        setIsAiLoading(true);
+                        
+                        try {
+                            const response = await fetch('http://localhost:4001/api/notes/summarize-from-email', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ emailContent: selectedEmail.body }),
+                            });
+                            const result = await response.json();
+
+                            if (!response.ok || !result.success) throw new Error(result.error || "Failed to summarize email.");
+
+                            setSuggestedNote(result.data.suggestedNote);
+                            setIsNoteModalOpen(true);
+
+                        } catch (e: any) {
+                            setAiError(e);
+                            alert(`Error: ${e.message}`);
+                        } finally {
+                            setIsAiLoading(false);
+                        }
+                    }}
+                    disabled={isAiLoading}
+                    className="flex items-center gap-2 px-3 py-1 bg-blue-600 text-white text-xs rounded-md hover:bg-blue-700 disabled:bg-blue-300"
+                >
+                    {isAiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FilePlus size={12} />}
+                    {isAiLoading ? 'Processing...' : 'Add Note'}
+                </button>
             </div>
 
             {/* Reply Box */}
@@ -692,6 +836,21 @@ Michael Brown`
   );
 };
 
+// Export the component wrapped with CedarCopilot
+export default function EmailAppWrapper() {
+  const llmProvider = {
+    provider: 'custom' as const,
+    config: {
+      baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001',
+    }
+  } as ProviderConfig;
+
+  return (
+    <CedarCopilot llmProvider={llmProvider}>
+      <EmailPortal />
+    </CedarCopilot>
+  );
+}
 interface CommandPaletteSpellProps {
   selectedPatientId?: string;
   onFetchSummary: (patientId: string) => void;

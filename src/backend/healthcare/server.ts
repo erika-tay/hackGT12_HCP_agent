@@ -281,6 +281,107 @@ app.post('/api/emails/:patientId/draft-reply', async (req, res) => {
 });
 
 // ===================
+// CLINICAL NOTE GENERATION ENDPOINT
+// ===================
+
+app.post('/api/patient/:patientId/clinical-note', async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const { noteType, currentContent, instruction, enhanceExisting } = req.body;
+    
+    console.log(`📝 API: Generating clinical note for patient ${patientId}`);
+    console.log(`📝 Note Type: ${noteType}, Enhance: ${enhanceExisting}`);
+    
+    // Use Mastra agent tool execution for clinical note generation
+    const result = await healthcareAgent.executeTool('generate-clinical-note', { 
+      patientId,
+      noteType: noteType || 'Progress Note',
+      currentContent: currentContent || '',
+      instruction: instruction || 'Generate comprehensive clinical note',
+      enhanceExisting: enhanceExisting || false
+    });
+    
+    if (result.success) {
+      console.log(`✅ API: Clinical note generated successfully`);
+      
+      // Set up Server-Sent Events for streaming response
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+
+      // Stream the response
+      const noteText = result.note;
+      const words = noteText.split(' ');
+      
+      for (let i = 0; i < words.length; i++) {
+        res.write(words[i] + ' ');
+        await new Promise(resolve => setTimeout(resolve, 50)); // Small delay for streaming effect
+      }
+      
+      res.end();
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error || 'Failed to generate clinical note'
+      });
+    }
+    
+  } catch (error: any) {
+    console.error('❌ API: Clinical note generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
+app.post('/api/notes/summarize-from-email', async (req, res) => {
+  try {
+    const { emailContent } = req.body;
+    if (!emailContent) {
+      return res.status(400).json({ success: false, error: 'Email content is required.' });
+    }
+
+    console.log(`🧠 API: Summarizing email for note generation...`);
+    const result = await healthcareAgent.executeTool('summarize-email-for-note', { emailContent });
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(500).json(result);
+    }
+  } catch (error: any) {
+    console.error('❌ API: Error in summarize-from-email endpoint:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+app.post('/api/notes/save', async (req, res) => {
+  try {
+    const { patientId, noteContent } = req.body;
+    if (!patientId || !noteContent) {
+      return res.status(400).json({ success: false, error: 'Patient ID and note content are required.' });
+    }
+
+    console.log(`💾 API: Saving note for patient ${patientId}...`);
+    const result = await healthcareAgent.executeTool('save-encounter-note', { patientId, noteContent });
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(500).json(result);
+    }
+  } catch (error: any) {
+    console.error('❌ API: Error in save-note endpoint:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ===================
 // CEDAR OS CONTEXT-AWARE EMAIL REPLY ENDPOINT
 // ===================
 
